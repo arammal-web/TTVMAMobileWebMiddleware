@@ -1,0 +1,11 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs/ProjectEvaluation
+/.vs/TTVMAMobileWebMiddleware
+/TTVMAMobileWebMiddleware/.config
+/TTVMAMobileWebMiddleware/.vs/TTVMAMobileWebMiddleware
+/TTVMAMobileWebMiddleware/bin
+/TTVMAMobileWebMiddleware/obj
+/TTVMAMobileWebMiddleware/Properties

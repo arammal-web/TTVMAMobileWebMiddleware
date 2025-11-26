@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TTVMAMobileWebMiddleware", "TTVMAMobileWebMiddleware\TTVMAMobileWebMiddleware.csproj", "{8DF74631-5A37-480B-B587-10C2D5390843}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shared", "..\TTVMAWeb\Shared\Shared.csproj", "{CA224C50-8055-2A91-EFF1-CC40AD7A702C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8DF74631-5A37-480B-B587-10C2D5390843}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8DF74631-5A37-480B-B587-10C2D5390843}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8DF74631-5A37-480B-B587-10C2D5390843}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8DF74631-5A37-480B-B587-10C2D5390843}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CA224C50-8055-2A91-EFF1-CC40AD7A702C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CA224C50-8055-2A91-EFF1-CC40AD7A702C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CA224C50-8055-2A91-EFF1-CC40AD7A702C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CA224C50-8055-2A91-EFF1-CC40AD7A702C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C3017951-5CDC-41BB-8280-D886BDA130EA}
+	EndGlobalSection
+EndGlobal

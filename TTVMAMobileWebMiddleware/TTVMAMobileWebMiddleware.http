@@ -1,0 +1,6 @@
+@TTVMAMobileWebMiddleware_HostAddress = http://localhost:5103
+
+GET {{TTVMAMobileWebMiddleware_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

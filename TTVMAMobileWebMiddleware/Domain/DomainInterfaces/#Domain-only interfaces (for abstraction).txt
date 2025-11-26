@@ -1,0 +1,1 @@
+Domain-only interfaces (for abstraction)

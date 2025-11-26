@@ -1,0 +1,1 @@
+Aggregate roots and entities (e.g., Citizen, License)

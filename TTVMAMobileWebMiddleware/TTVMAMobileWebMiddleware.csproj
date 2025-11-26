@@ -1,0 +1,29 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.10" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="API\Controllers\Controllers\" />
+    <Folder Include="Application\Interfaces\Controllers\" />
+    <Folder Include="Domain\Helpers\" />
+    <Folder Include="Domain\Messaging\" />
+    <Folder Include="Domain\Responses\" />
+    <Folder Include="Domain\Security\" />
+    <Folder Include="Infrastructure\Settings\" />
+    <Folder Include="Infrastructure\Utilities\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\TTVMAWeb\Shared\Shared.csproj" />
+  </ItemGroup>
+
+</Project>
