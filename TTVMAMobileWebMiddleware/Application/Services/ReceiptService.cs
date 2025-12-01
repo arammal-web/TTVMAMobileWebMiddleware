@@ -9,7 +9,7 @@ using TTVMAMobileWebMiddleware.Domain.Entities;
 using TTVMAMobileWebMiddleware.Domain.Entities.DLS;
 using TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
 using TTVMAMobileWebMiddleware.Domain.Enums;
-using TTVMAMobileWebMiddleware.Domain.Views; 
+using TTVMAMobileWebMiddleware.Domain.Views;
 
 namespace TTVMAMobileWebMiddleware.Application.Services
 {
@@ -97,11 +97,15 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                 var structureId = entity.Receipt.StructureId?.ToString("D3") ?? "000";
 
                 // Move expensive operations outside transaction
-                var feeCategories = await _dLSDbContext.FeeCategories
+                var feeCategoriesDLS = await _dLSDbContext.FeeCategories
                     .Where(fc => categoryIds.Contains(fc.Id))
                     .ToDictionaryAsync(fc => fc.Id, fc => fc, ct);
 
-                var sequence = await _sequenceService.GetNextSequenceAsync("Receipt", 0, currentYear,ct);
+                var feeCategoriesMob = await _context.FeeCategories
+                    .Where(fc => categoryIds.Contains(fc.Id))
+                    .ToDictionaryAsync(fc => fc.Id, fc => fc, ct);
+
+                var sequence = await GetNextSequenceAsync("Receipt", 0, currentYear, ct);
                 var sequenceFormatted = sequence.ToString("D7");
 
                 // Get application data with citizen information in a single query (outside transaction)
@@ -147,207 +151,32 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                 }
 
                 // Prepare all receipts and details before transaction
-                var receiptsToCreate = new List<Receipt>();
-                var detailsToCreate = new List<ReceiptDetail>();
-
-                foreach (var group in groupedDetails)
-                {
-                    var categoryId = group.Key;
-                    var details = group.ToList();
-
-                    // Get fee category info
-                    var feeCategory = categoryId.HasValue && feeCategories.ContainsKey(categoryId.Value)
-                        ? feeCategories[categoryId.Value]
-                        : null;
-
-                    // Create receipt number based on category 
-                    var categoryCode = feeCategory?.Sequence;
-                    // Add leading zero if categoryCode is a single digit
-                    var formattedCategoryCode = categoryCode?.ToString().PadLeft(2, '0') ?? "00";
-                    string ReceiptCategorySequenceNumber = $"{currentYear}-{formattedCategoryCode}-{sequenceFormatted}";
-                    string receiptNumberIntegration = $"{currentYear}{formattedCategoryCode}{sequenceFormatted}";
-
-                    // Create new receipt for this category
-                    var categoryReceipt = new Receipt
-                    {
-                        ApplicationId = entity.Receipt.ApplicationId,
-                        ReceiptNumber = sequenceFormatted,
-                        ReceiptNumberIntegration = receiptNumberIntegration,
-                        Description = entity.Receipt.Description,
-                        ReceiptStatusId = (int)ReceiptStatuses.PendingPayment,
-                        StructureId = entity.Receipt.StructureId,
-                        TotalAmount = group.Sum(x => x.Amount), // Calculate total from details
-                        IsPaid = true,
-                        PaidDate = DateTime.UtcNow,
-                        IsPosted = false,
-                        IsDeleted = false,
-                        CitizenFullName = CitizenFullName,
-                        Notes = entity.Receipt.Notes,
-                        CreatedDate = DateTime.UtcNow,
-                        CreatedUserId = entity.Receipt.CreatedUserId,
-                        ReceiptStatusDate = DateTime.UtcNow,
-                        ReceiptCategorySequenceNumber = ReceiptCategorySequenceNumber,
-                        DrivingLicenseId = DrivingLicenseId
-                    };
-
-                    receiptsToCreate.Add(categoryReceipt);
-                }
-
-                // Start transaction only for database operations
-                using var transaction = await _dLSDbContext.Database.BeginTransactionAsync(ct);
-                try
-                {
-                    // Add all receipts at once
-                    _dLSDbContext.Receipts.AddRange(receiptsToCreate);
-                    await _dLSDbContext.SaveChangesAsync(ct);
-
-                    // Create receipt details for each receipt 
-                    for (int i = 0; i < receiptsToCreate.Count; i++)
-                    {
-                        var receipt = receiptsToCreate[i];
-                        var group = groupedDetails[i];
-                        var details = group.ToList();
-
-                        foreach (var detail in details)
-                        {
-                            var receiptDetail = new ReceiptDetail
-                            {
-                                ReceiptId = receipt.Id,
-                                ItemId = detail.ItemId,
-                                ProcessId = detail.ProcessId,
-                                BPVarietyId = detail.BPVarietyId,
-                                ItemDescriptionAR = detail.ItemDescriptionAR,
-                                ItemDescriptionEN = detail.ItemDescriptionEN,
-                                ItemCode = detail.ItemCode,
-                                ItemTypeId = detail.ItemTypeId,
-                                ItemCategoryId = detail.ItemCategoryId,
-                                Amount = detail.Amount,
-                                Notes = detail.Notes,
-                                IsDeleted = false,
-                                CreatedDate = DateTime.UtcNow,
-                                CreatedUserId = detail.CreatedUserId,
-
-                            };
-
-                            detailsToCreate.Add(receiptDetail);
-                        }
-
-                    }
-
-                    // Add all details at once
-                    _dLSDbContext.ReceiptDetails.AddRange(detailsToCreate);
-                    await _dLSDbContext.SaveChangesAsync(ct);
-
-                    await transaction.CommitAsync(ct);
-                    
-                    // Load all created receipts with navigation data in a single query (fixes N+1 problem)
-                    var createdReceiptIds = receiptsToCreate.Select(r => r.Id).ToList();
-                    var receipts = await _dLSDbContext.Receipts
-                        .AsNoTracking()
-                        .Where(r => createdReceiptIds.Contains(r.Id))
-                        .Include(r => r.ReceiptStatus)
-                        .Include(r => r.Application)
-                        .Include(r => r.ReceiptDetails)
-                            .ThenInclude(d => d.FeeCategory)
-                        .ToListAsync(ct);
-
-                    // Load all driving licenses in a single query to avoid N+1
-                    var drivingLicenseIds = receipts
-                        .Where(r => r.DrivingLicenseId.HasValue)
-                        .Select(r => r.DrivingLicenseId.Value)
-                        .Distinct()
-                        .ToList();
-                    
-                    var drivingLicenses = drivingLicenseIds.Any()
-                        ? await _dLSDbContext.DrivingLicenses
-                            .AsNoTracking()
-                            .Where(dl => drivingLicenseIds.Contains(dl.Id))
-                            .ToDictionaryAsync(dl => dl.Id, dl => dl, ct)
-                        : new Dictionary<int, DrivingLicenseABP>();
-
-                    // Map receipts to DTOs
-                    foreach (var receipt in receipts)
-                    {
-                        var drivingLicense = receipt.DrivingLicenseId.HasValue && drivingLicenses.ContainsKey(receipt.DrivingLicenseId.Value)
-                            ? drivingLicenses[receipt.DrivingLicenseId.Value]
-                            : null;
-
-                        var receiptDto = new ReceiptResponseDto
-                        {
-                            Id = receipt.Id,
-                            ApplicationId = receipt.ApplicationId,
-                            ApplicationNumber = receipt.ApplicationId != null ? receipt.Application?.ApplicationNumber : null,
-                            ReceiptNumber = receipt.ReceiptNumber,
-                            ReceiptCategorySequenceNumber = receipt.ReceiptCategorySequenceNumber,
-                            Description = receipt.Description,
-                            ReceiptStatusId = receipt.ReceiptStatusId,
-                            ReceiptStatusEn = receipt.ReceiptStatusId != null ? receipt.ReceiptStatus?.StatusDesc : null,
-                            ReceiptStatusAr = receipt.ReceiptStatusId != null ? receipt.ReceiptStatus?.StatusDescAr : null,
-                            ReceiptStatusFr = receipt.ReceiptStatusId != null ? receipt.ReceiptStatus?.StatusDescFr : null,
-                            ReceiptStatusDate = receipt.ReceiptStatusDate,
-                            StructureId = receipt.StructureId,
-                            TotalAmount = receipt.TotalAmount,
-                            IsPaid = receipt.IsPaid,
-                            PaidDate = receipt.PaidDate,
-                            PaymentProviderNumber = receipt.PaymentProviderNumber,
-                            PaymentProviderDate = receipt.PaymentProviderDate,
-                            PaymentProviderData = receipt.PaymentProviderData,
-                            DataHash = receipt.DataHash,
-                            IsPosted = receipt.IsPosted,
-                            PostedDate = receipt.PostedDate,
-                            PostedUserId = receipt.PostedUserId,
-                            CitizenFullName = receipt.CitizenFullName,
-                            Notes = receipt.Notes,
-                            IsDeleted = receipt.IsDeleted,
-                            DeletedDate = receipt.DeletedDate,
-                            DeletedUserId = receipt.DeletedUserId,
-                            CreatedDate = receipt.CreatedDate,
-                            CreatedUserId = receipt.CreatedUserId,
-                            ModifiedDate = receipt.ModifiedDate,
-                            ModifiedUserId = receipt.ModifiedUserId,
-                            ApplicationProcessFee = null,
-                            Fee = null,
-                            DrivingLicenseNumber = drivingLicense?.DrivingLicenseNumber,
-                            CitizenId = drivingLicense?.CitizenId,
-                            ReceiptDetails = receipt.ReceiptDetails
-                                .Where(d => d.IsDeleted != true)
-                                .Select(d => new ReceiptDetailResponseDto
-                                {
-                                    Id = d.Id,
-                                    ReceiptId = d.ReceiptId,
-                                    ItemId = d.ItemId,
-                                    ProcessId = d.ProcessId,
-                                    BPVarietyId = d.BPVarietyId,
-                                    ItemDescriptionAR = d.ItemDescriptionAR,
-                                    ItemDescriptionEN = d.ItemDescriptionEN,
-                                    ItemCode = d.ItemCode,
-                                    ItemTypeId = d.ItemTypeId,
-                                    ItemCategoryId = d.ItemCategoryId,
-                                    ItemCategoryEn = d.ItemCategoryId != null ? d.FeeCategory?.NameEn : null,
-                                    ItemCategoryAr = d.ItemCategoryId != null ? d.FeeCategory?.NameAr : null,
-                                    ItemCategoryFr = d.ItemCategoryId != null ? d.FeeCategory?.NameFr : null,
-                                    Amount = d.Amount,
-                                    Notes = d.Notes,
-                                    IsDeleted = d.IsDeleted,
-                                    DeletedDate = d.DeletedDate,
-                                    DeletedUserId = d.DeletedUserId,
-                                    CreatedDate = d.CreatedDate,
-                                    CreatedUserId = d.CreatedUserId,
-                                    ModifiedDate = d.ModifiedDate,
-                                    ModifiedUserId = d.ModifiedUserId
-                                })
-                                .ToList()
-                        };
-                        receiptResponseDto.Add(receiptDto);
-                    }
-
-                    return receiptResponseDto;
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync(ct);
-                    throw;
-                }
+                var receiptsToCreateDSL = new List<Receipt>();
+                var detailsToCreateDLS = new List<ReceiptDetail>();
+                var receiptsToCreateMOB = new List<ReceiptMOB>();
+                var detailsToCreateMON = new List<ReceiptDetailMOB>();
+                await CreateDLSReceiptWithDetails(entity,
+                    receiptResponseDto,
+                    groupedDetails,
+                    currentYear,
+                    feeCategoriesDLS,
+                    sequenceFormatted,
+                    CitizenFullName,
+                    DrivingLicenseId,
+                    receiptsToCreateDSL,
+                    detailsToCreateDLS,
+                    ct);
+                return await CreateMobileReceiptsWithDetails(entity,
+                      receiptResponseDto,
+                      groupedDetails,
+                      currentYear,
+                      feeCategoriesMob,
+                      sequenceFormatted,
+                      CitizenFullName,
+                      DrivingLicenseId,
+                      receiptsToCreateMOB,
+                      detailsToCreateMON,
+                      ct);
             }
             catch (Exception ex)
             {
@@ -357,99 +186,201 @@ namespace TTVMAMobileWebMiddleware.Application.Services
             }
         }
 
-        private async Task<ReceiptResponseDto?> GetByIdAsync(int id, CancellationToken ct = default)
+        private async Task<List<ReceiptResponseDto>> CreateMobileReceiptsWithDetails(ReceiptWithDetailRequest entity, List<ReceiptResponseDto> receiptResponseDto, List<IGrouping<int?, ReceiptDetail>> groupedDetails, int currentYear, Dictionary<int, Domain.Entities.Mobile.FeeCategory> feeCategories, string sequenceFormatted, string CitizenFullName, int? DrivingLicenseId, List<ReceiptMOB> receiptsToCreate, List<ReceiptDetailMOB> detailsToCreate, CancellationToken ct)
         {
+            foreach (var group in groupedDetails)
+            {
+                var categoryId = group.Key;
+                var details = group.ToList();
+
+                // Get fee category info
+                var feeCategory = categoryId.HasValue && feeCategories.ContainsKey(categoryId.Value)
+                    ? feeCategories[categoryId.Value]
+                    : null;
+
+                // Create receipt number based on category 
+                var categoryCode = feeCategory?.Sequence;
+                // Add leading zero if categoryCode is a single digit
+                var formattedCategoryCode = categoryCode?.ToString().PadLeft(2, '0') ?? "00";
+                string ReceiptCategorySequenceNumber = $"{currentYear}-{formattedCategoryCode}-{sequenceFormatted}";
+                string receiptNumberIntegration = $"{currentYear}{formattedCategoryCode}{sequenceFormatted}";
+
+                // Create new receipt for this category
+                var categoryReceipt = new ReceiptMOB
+                {
+                    ApplicationId = entity.Receipt.ApplicationId,
+                    ReceiptNumber = sequenceFormatted,
+                    ReceiptNumberIntegration = receiptNumberIntegration,
+                    Description = entity.Receipt.Description,
+                    ReceiptStatusId = (int)ReceiptStatuses.PendingPayment,
+                    StructureId = entity.Receipt.StructureId,
+                    TotalAmount = group.Sum(x => x.Amount), // Calculate total from details
+                    IsPaid = true,
+                    PaidDate = DateTime.UtcNow,
+                    IsPosted = false,
+                    IsDeleted = false,
+                    CitizenFullName = CitizenFullName,
+                    Notes = entity.Receipt.Notes,
+                    CreatedDate = DateTime.UtcNow,
+                    CreatedUserId = entity.Receipt.CreatedUserId,
+                    ReceiptStatusDate = DateTime.UtcNow,
+                    ReceiptCategorySequenceNumber = ReceiptCategorySequenceNumber,
+                    DrivingLicenseId = DrivingLicenseId
+                };
+
+                receiptsToCreate.Add(categoryReceipt);
+            }
+            using var transaction = await _context.Database.BeginTransactionAsync(ct);
             try
             {
-                return await _context.Receipts
-                    .AsNoTracking()
-                    .Where(r => r.Id == id)
-                    .Select(r => new ReceiptResponseDto
-                    {
-                        Id = r.Id,
-                        ApplicationId = r.ApplicationId,
-                        ApplicationNumber = r.ApplicationId != null ? r.Application.ApplicationNumber : null,
-                        ReceiptNumber = r.ReceiptNumber,
-                        ReceiptCategorySequenceNumber = r.ReceiptCategorySequenceNumber,
-                        Description = r.Description,
-                        ReceiptStatusId = r.ReceiptStatusId,
-                        ReceiptStatusEn = r.ReceiptStatusId != null ? r.ReceiptStatus.StatusDesc : null,
-                        ReceiptStatusAr = r.ReceiptStatusId != null ? r.ReceiptStatus.StatusDescAr : null,
-                        ReceiptStatusFr = r.ReceiptStatusId != null ? r.ReceiptStatus.StatusDescFr : null,
-                        ReceiptStatusDate = r.ReceiptStatusDate,
-                        StructureId = r.StructureId,
-                        TotalAmount = r.TotalAmount,
-                        IsPaid = r.IsPaid,
-                        PaidDate = r.PaidDate,
-                        PaymentProviderNumber = r.PaymentProviderNumber,
-                        PaymentProviderDate = r.PaymentProviderDate,
-                        PaymentProviderData = r.PaymentProviderData,
-                        DataHash = r.DataHash,
-                        IsPosted = r.IsPosted,
-                        PostedDate = r.PostedDate,
-                        PostedUserId = r.PostedUserId,
-                        CitizenFullName = r.CitizenFullName,
-                        Notes = r.Notes,
-                        IsDeleted = r.IsDeleted,
-                        DeletedDate = r.DeletedDate,
-                        DeletedUserId = r.DeletedUserId,
-                        CreatedDate = r.CreatedDate,
-                        CreatedUserId = r.CreatedUserId,
-                        ModifiedDate = r.ModifiedDate,
-                        ModifiedUserId = r.ModifiedUserId,
-                        ApplicationProcessFee = null,
-                        Fee = null,
-                        DrivingLicenseNumber = r.DrivingLicenseId != null ?
-                                                 _context.DrivingLicenses
-                                                 .AsNoTracking()
-                                                 .Where(dl => dl.Id == r.DrivingLicenseId)
-                                                 .Select(dl => dl.DrivingLicenseNumber)
-                                                 .FirstOrDefault() : null,
-                        CitizenId = _context.DrivingLicenses
-                                                 .AsNoTracking()
-                                                 .Where(dl => dl.Id == r.DrivingLicenseId)
-                                                 .Select(dl => dl.CitizenId)
-                                                 .FirstOrDefault(),
+                // Add all receipts at once
+                _context.Receipts.AddRange(receiptsToCreate);
+                await _context.SaveChangesAsync(ct);
 
-                        ReceiptDetails = r.ReceiptDetails
-                            .Where(d => d.IsDeleted != true)
-                            .Select(d => new ReceiptDetailResponseDto
-                            {
-                                Id = d.Id,
-                                ReceiptId = d.ReceiptId,
-                                ItemId = d.ItemId,
-                                ProcessId = d.ProcessId,
-                                BPVarietyId = d.BPVarietyId,
-                                ItemDescriptionAR = d.ItemDescriptionAR,
-                                ItemDescriptionEN = d.ItemDescriptionEN,
-                                ItemCode = d.ItemCode,
-                                ItemTypeId = d.ItemTypeId,
-                                ItemCategoryId = d.ItemCategoryId,
-                                ItemCategoryEn = d.ItemCategoryId != null ? d.FeeCategory.NameEn : null,
-                                ItemCategoryAr = d.ItemCategoryId != null ? d.FeeCategory.NameAr : null,
-                                ItemCategoryFr = d.ItemCategoryId != null ? d.FeeCategory.NameFr : null,
-                                Amount = d.Amount,
-                                Notes = d.Notes,
-                                IsDeleted = d.IsDeleted,
-                                DeletedDate = d.DeletedDate,
-                                DeletedUserId = d.DeletedUserId,
-                                CreatedDate = d.CreatedDate,
-                                CreatedUserId = d.CreatedUserId,
-                                ModifiedDate = d.ModifiedDate,
-                                ModifiedUserId = d.ModifiedUserId
-                            })
-                            .ToList()
-                    })
-                    .FirstOrDefaultAsync(ct);
+                // Create receipt details for each receipt 
+                for (int i = 0; i < receiptsToCreate.Count; i++)
+                {
+                    var receipt = receiptsToCreate[i];
+                    var group = groupedDetails[i];
+                    var details = group.ToList();
+
+                    foreach (var detail in details)
+                    {
+                        var receiptDetail = new ReceiptDetailMOB
+                        {
+                            ReceiptId = receipt.Id,
+                            ItemId = detail.ItemId,
+                            ProcessId = detail.ProcessId,
+                            BPVarietyId = detail.BPVarietyId,
+                            ItemDescriptionAR = detail.ItemDescriptionAR,
+                            ItemDescriptionEN = detail.ItemDescriptionEN,
+                            ItemCode = detail.ItemCode,
+                            ItemTypeId = detail.ItemTypeId,
+                            ItemCategoryId = detail.ItemCategoryId,
+                            Amount = detail.Amount,
+                            Notes = detail.Notes,
+                            IsDeleted = false,
+                            CreatedDate = DateTime.UtcNow,
+                            CreatedUserId = detail.CreatedUserId,
+
+                        };
+
+                        detailsToCreate.Add(receiptDetail);
+                    }
+
+                }
+                // Add all details at once
+                _context.ReceiptDetails.AddRange(detailsToCreate);
+                await _context.SaveChangesAsync(ct);
+
+                await transaction.CommitAsync(ct);
+
+                return receiptResponseDto;
             }
             catch (Exception ex)
             {
-                var exception = new Exception($"Error retrieving receipt {id}");
-                exception.HelpLink = "receipt_retrieval_error";
-                throw exception;
+                await transaction.RollbackAsync(ct);
+                throw;
             }
         }
+        private async Task<List<ReceiptResponseDto>> CreateDLSReceiptWithDetails(ReceiptWithDetailRequest entity, List<ReceiptResponseDto> receiptResponseDto, List<IGrouping<int?, ReceiptDetail>> groupedDetails, int currentYear, Dictionary<int, Domain.Entities.DLS.FeeCategory> feeCategories, string sequenceFormatted, string CitizenFullName, int? DrivingLicenseId, List<Receipt> receiptsToCreate, List<ReceiptDetail> detailsToCreate, CancellationToken ct)
+        {
+            foreach (var group in groupedDetails)
+            {
+                var categoryId = group.Key;
+                var details = group.ToList();
 
+                // Get fee category info
+                var feeCategory = categoryId.HasValue && feeCategories.ContainsKey(categoryId.Value)
+                    ? feeCategories[categoryId.Value]
+                    : null;
+
+                // Create receipt number based on category 
+                var categoryCode = feeCategory?.Sequence;
+                // Add leading zero if categoryCode is a single digit
+                var formattedCategoryCode = categoryCode?.ToString().PadLeft(2, '0') ?? "00";
+                string ReceiptCategorySequenceNumber = $"{currentYear}-{formattedCategoryCode}-{sequenceFormatted}";
+                string receiptNumberIntegration = $"{currentYear}{formattedCategoryCode}{sequenceFormatted}";
+
+                // Create new receipt for this category
+                var categoryReceipt = new Receipt
+                {
+                    ApplicationId = entity.Receipt.ApplicationId,
+                    ReceiptNumber = sequenceFormatted,
+                    ReceiptNumberIntegration = receiptNumberIntegration,
+                    Description = entity.Receipt.Description,
+                    ReceiptStatusId = (int)ReceiptStatuses.PendingPayment,
+                    StructureId = entity.Receipt.StructureId,
+                    TotalAmount = group.Sum(x => x.Amount), // Calculate total from details
+                    IsPaid = true,
+                    PaidDate = DateTime.UtcNow,
+                    IsPosted = false,
+                    IsDeleted = false,
+                    CitizenFullName = CitizenFullName,
+                    Notes = entity.Receipt.Notes,
+                    CreatedDate = DateTime.UtcNow,
+                    CreatedUserId = entity.Receipt.CreatedUserId,
+                    ReceiptStatusDate = DateTime.UtcNow,
+                    ReceiptCategorySequenceNumber = ReceiptCategorySequenceNumber,
+                    DrivingLicenseId = DrivingLicenseId
+                };
+
+                receiptsToCreate.Add(categoryReceipt);
+            }
+            using var transaction = await _dLSDbContext.Database.BeginTransactionAsync(ct);
+            try
+            {
+                // Add all receipts at once
+                _dLSDbContext.Receipts.AddRange(receiptsToCreate);
+                await _dLSDbContext.SaveChangesAsync(ct);
+
+                // Create receipt details for each receipt 
+                for (int i = 0; i < receiptsToCreate.Count; i++)
+                {
+                    var receipt = receiptsToCreate[i];
+                    var group = groupedDetails[i];
+                    var details = group.ToList();
+
+                    foreach (var detail in details)
+                    {
+                        var receiptDetail = new ReceiptDetail
+                        {
+                            ReceiptId = receipt.Id,
+                            ItemId = detail.ItemId,
+                            ProcessId = detail.ProcessId,
+                            BPVarietyId = detail.BPVarietyId,
+                            ItemDescriptionAR = detail.ItemDescriptionAR,
+                            ItemDescriptionEN = detail.ItemDescriptionEN,
+                            ItemCode = detail.ItemCode,
+                            ItemTypeId = detail.ItemTypeId,
+                            ItemCategoryId = detail.ItemCategoryId,
+                            Amount = detail.Amount,
+                            Notes = detail.Notes,
+                            IsDeleted = false,
+                            CreatedDate = DateTime.UtcNow,
+                            CreatedUserId = detail.CreatedUserId,
+
+                        };
+
+                        detailsToCreate.Add(receiptDetail);
+                    }
+
+                }
+
+                // Add all details at once
+                _dLSDbContext.ReceiptDetails.AddRange(detailsToCreate);
+                await _dLSDbContext.SaveChangesAsync(ct);
+
+                await transaction.CommitAsync(ct);
+                return receiptResponseDto;
+
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync(ct);
+                throw;
+            }
+        }
         /// <inheritdoc/>
         public async Task<SyncResult> SyncReceiptsAndDrivingLicensesAsync(int userId, CancellationToken ct = default)
         {
@@ -663,8 +594,7 @@ namespace TTVMAMobileWebMiddleware.Application.Services
             }
         }
 
-        private async Task SyncDrivingLicensesAsync(
-            List<(int OnlineCitizenId, int LocalCitizenId)> mobileCitizens, int userId, SyncResult result, CancellationToken ct)
+        private async Task SyncDrivingLicensesAsync(List<(int OnlineCitizenId, int LocalCitizenId)> mobileCitizens, int userId, SyncResult result, CancellationToken ct)
         {
             var localCitizenIds = mobileCitizens.Select(c => c.LocalCitizenId).ToList();
 
@@ -687,7 +617,7 @@ namespace TTVMAMobileWebMiddleware.Application.Services
 
                     // Check if driving license already exists in mobile database
                     var existingDrivingLicense = await _context.DrivingLicenses
-                        .FirstOrDefaultAsync(dl =>  dl.CitizenId == mapping.OnlineCitizenId &&
+                        .FirstOrDefaultAsync(dl => dl.CitizenId == mapping.OnlineCitizenId &&
                                                    dl.DrivingLicenseNumber == dlsDrivingLicense.DrivingLicenseNumber &&
                                                    !dl.IsDeleted, ct);
 
@@ -819,6 +749,62 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                     result.Errors.Add($"Error syncing driving license {dlsDrivingLicense.Id}: {ex.Message}");
                     _logger.LogError(ex, "Error syncing driving license {DrivingLicenseId}", dlsDrivingLicense.Id);
                 }
+            }
+        }
+
+        private async Task<int> GetNextSequenceAsync(string tableName, int? structureId = null, int? year = null, CancellationToken ct = default)
+        {
+            using var transaction = await _dLSDbContext.Database.BeginTransactionAsync();
+            try
+            {
+                if (string.IsNullOrEmpty(tableName))
+                {
+                    var ex = new Exception("Table name cannot be null or empty.");
+                    ex.HelpLink = "table_name_cannot_be_null_or_empty";
+                    throw ex;
+                }
+                if (year == null)
+                {
+                    year = DateTime.Now.Year;
+                }
+                if (structureId == null)
+                {
+                    structureId = 0; // Assuming 0 is a valid default for StructureId
+                }
+                var sequence = await _context.Set<SequenceNumber>()
+                    .Where(s => s.TableName == tableName
+                             && s.YearValue == year)
+                    .FirstOrDefaultAsync();
+
+                int nextValue = (sequence?.MaxValue ?? 0) + 1;
+
+                if (sequence == null)
+                {
+                    var insertSql = $@"
+                        INSERT INTO STR.SequenceNumber (TableName, YearValue, StructureId, MaxValue)
+                        VALUES (@p0, @p1, @p2, @p3)
+                    ";
+
+                    await _context.Database.ExecuteSqlRawAsync(insertSql,
+                        tableName,
+                        year,
+                        structureId,
+                        nextValue);
+                }
+                else
+                {
+                    sequence.MaxValue = nextValue;
+                    _context.Set<SequenceNumber>().Update(sequence);
+                    await _context.SaveChangesAsync();
+                }
+
+                await transaction.CommitAsync();
+                return nextValue;
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
             }
         }
 
