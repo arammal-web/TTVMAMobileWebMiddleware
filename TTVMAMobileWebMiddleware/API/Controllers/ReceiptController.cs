@@ -35,7 +35,7 @@ namespace TTVMAMobileWebMiddleware.API.Controllers
         {
             if (!ModelState.IsValid) return BadRequest("Not Valid");
 
-            var result = await _service.CreateWithDeatailsAsync(request);
+            var result = await _service.CreateWithDetailsAsync(request);
             // return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
             return Ok(result);
         }

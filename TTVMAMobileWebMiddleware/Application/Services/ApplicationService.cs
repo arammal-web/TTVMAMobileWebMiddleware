@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using TTVMAMobileWebMiddleware.Application.Common;
 using TTVMAMobileWebMiddleware.Application.DTOs;
 using TTVMAMobileWebMiddleware.Application.Interfaces;
+using TTVMAMobileWebMiddleware.Application.Interfaces.Mobile;
 using TTVMAMobileWebMiddleware.Domain.Entities;
 using TTVMAMobileWebMiddleware.Domain.Entities.DLS;
 using TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
@@ -34,6 +35,7 @@ public class ApplicationService : IApplicationService
     private readonly ISequenceGeneratorService _sequenceService;
     private readonly IExternalApiService _externalApiService;
     private readonly IReceiptService _receiptService;
+    private readonly INotificationService _notificationService;
 
     private readonly ILogger<ApplicationService> _logger;
     private readonly IMemoryCache _cache;
@@ -45,6 +47,7 @@ public class ApplicationService : IApplicationService
         ISequenceGeneratorService sequenceService,
         IExternalApiService externalApiService,
         IReceiptService receiptService,
+        INotificationService notificationService,
         ILogger<ApplicationService> logger)
     {
         _context = context;
@@ -52,6 +55,7 @@ public class ApplicationService : IApplicationService
         _sequenceService = sequenceService;
         _externalApiService = externalApiService;
         _receiptService = receiptService;
+        _notificationService = notificationService;
         _cache = cache;
         _logger = logger;
     }
@@ -282,7 +286,7 @@ public class ApplicationService : IApplicationService
                                 DocumentId = d.DocumentId,
                                 DocFilePath = d.DocFilePath,
                                 DocFileExt = d.DocFileExt,
-
+                                DocFileData = d.DocFileData,
                                 DocumentNameEn = d.Document != null ? d.Document.DocumentNameEn : null,
                                 DocumentNameAr = d.Document != null ? d.Document.DocumentNameAr : null,
                                 DocumentNameFr = d.Document != null ? d.Document.DocumentNameFr : null,
@@ -319,19 +323,39 @@ public class ApplicationService : IApplicationService
         try
         {
             var applicationToUpdate = await _context.Applications
+                .Include(a => a.Citizen)
                 .FirstOrDefaultAsync(
                     a => (a.Id == id || a.ApplicationNumber == id) && a.IsDeleted != true,
                     ct);
 
+            if (applicationToUpdate == null)
+            {
+                var ex = new Exception($"Application {id} not found");
+                ex.HelpLink = "application_not_found";
+                throw ex;
+            }
+
             applicationToUpdate.ApplicationApprovalStatusId = (int)ApplicationStatus.Rejected;
             applicationToUpdate.ApplicationApprovalStatusDate = DateTime.UtcNow;
             await _context.SaveChangesAsync(ct);
+
+            // Create notification for status update (Rejected)
+            if (applicationToUpdate.Citizen != null && applicationToUpdate.Citizen.UserId > 0)
+            {
+                await CreateNotificationAsync(
+                    applicationToUpdate.Citizen.UserId,
+                    "Application Rejected",
+                    $"Your application {applicationToUpdate.ApplicationNumber ?? id} has been rejected.",
+                    ct);
+            }
+
             return true;
         }
         catch (Exception ex)
         {
-
-            throw;
+            var exception = new Exception($"Error rejecting application {id}");
+            exception.HelpLink = "application_reject_error";
+            throw exception;
         }
     }
 
@@ -340,21 +364,39 @@ public class ApplicationService : IApplicationService
         try
         {
             var applicationToUpdate = await _context.Applications
+                .Include(a => a.Citizen)
                 .FirstOrDefaultAsync(
                     a => (a.Id == id || a.ApplicationNumber == id) && a.IsDeleted != true,
                     ct);
 
+            if (applicationToUpdate == null)
+            {
+                var ex = new Exception($"Application {id} not found");
+                ex.HelpLink = "application_not_found";
+                throw ex;
+            }
+
             applicationToUpdate.ApplicationApprovalStatusId = (int)ApplicationStatus.PendingDoc;
             applicationToUpdate.ApplicationApprovalStatusDate = DateTime.UtcNow;
-            //add to notification table
             await _context.SaveChangesAsync(ct);
+
+            // Create notification for status update (Document Required)
+            if (applicationToUpdate.Citizen != null && applicationToUpdate.Citizen.UserId > 0)
+            {
+                await CreateNotificationAsync(
+                    applicationToUpdate.Citizen.UserId,
+                    "Additional Documents Required",
+                    $"Your application {applicationToUpdate.ApplicationNumber ?? id} requires additional documents. Please upload the required documents.",
+                    ct);
+            }
 
             return true;
         }
         catch (Exception ex)
         {
-
-            throw;
+            var exception = new Exception($"Error updating application {id} to document required status");
+            exception.HelpLink = "application_document_required_error";
+            throw exception;
         }
     }
 
@@ -456,15 +498,30 @@ public class ApplicationService : IApplicationService
 
             if (applicationToUpdate != null)
             {
+                // Load citizen for notifications
+                await _context.Entry(applicationToUpdate)
+                    .Reference(a => a.Citizen)
+                    .LoadAsync(ct);
+
                 if (apiResponse.StatusCode == 200)
                 {
                     // API call successful - approve the application
                     applicationToUpdate.ApplicationApprovalStatusId = (int)ApplicationStatus.Approved;
                     applicationToUpdate.ApplicationApprovalStatusDate = DateTime.UtcNow;
-                    await CreateReceiptAsync(applicationId, ct);
+                     await CreateReceiptAsync(applicationId, ct);
                     _logger.LogInformation(
                         "Application {ApplicationId} approved after successful external API call. Status: {Status}",
                         applicationId, apiResponse.StatusCode);
+
+                    // Create notification for status update (Approved)
+                    if (applicationToUpdate.Citizen != null && applicationToUpdate.Citizen.UserId > 0)
+                    {
+                        await CreateNotificationAsync(
+                            applicationToUpdate.Citizen.UserId,
+                            "Application Approved",
+                            $"Your application {applicationToUpdate.ApplicationNumber ?? applicationId} has been approved successfully.",
+                            ct);
+                    }
                 }
                 else
                 {
@@ -475,6 +532,16 @@ public class ApplicationService : IApplicationService
                     _logger.LogWarning(
                         "Application {ApplicationId} rejected due to external API failure. Status: {Status}, Error: {Error}",
                         applicationId, apiResponse.StatusCode, apiResponse.ErrorMessage);
+
+                    // Create notification for status update (Rejected)
+                    if (applicationToUpdate.Citizen != null && applicationToUpdate.Citizen.UserId > 0)
+                    {
+                        await CreateNotificationAsync(
+                            applicationToUpdate.Citizen.UserId,
+                            "Application Rejected",
+                            $"Your application {applicationToUpdate.ApplicationNumber ?? applicationId} has been rejected. Reason: External API failure.",
+                            ct);
+                    }
                 }
 
                 // No need for Update() - entity is already tracked since it was loaded from context
@@ -482,9 +549,9 @@ public class ApplicationService : IApplicationService
             }
             else
             {
-                _logger.LogError(
-                    "Could not find application {ApplicationId} to update status after external API call",
-                    applicationId);
+                var ex = new Exception($"Could not find application {applicationId} to update status after external API call");
+                ex.HelpLink = "application_not_found_for_update";
+                throw ex;
             }
 
             // Return both the DTO and the API response
@@ -497,8 +564,9 @@ public class ApplicationService : IApplicationService
         }
         catch (Exception ex)
         {
-
-            throw;
+            var exception = new Exception($"Error approving pending application {applicationId}");
+            exception.HelpLink = "application_approve_error";
+            throw exception;
         }
     }
 
@@ -532,16 +600,16 @@ public class ApplicationService : IApplicationService
     }
 
 
-    public async Task<(IEnumerable<ApplicationListItemDto> items, PaginationMetaData metaData)> GetApplicationsAsync(Pagination pagination, string? keyword = null, string? status = null, string? filtration = "all", int? userId = null, int? branchId = null, CancellationToken ct = default)
+    public async Task<(IEnumerable<ApplicationListItemDto> items, PaginationMetaData metaData)> GetApplicationsAsync(Pagination pagination, string? keyword = null, int? status = null, string? filtration = "all", int? userId = null, int? branchId = null, CancellationToken ct = default)
     {
         // 0) Normalize inputs (avoid ToLower in SQL — SQL Server is case-insensitive by default)
         keyword = keyword?.Trim();
-        status = status?.Trim();
+       
 
         // 1) Build FILTER-ONLY query (no big projections)
         var filterQuery = _context.Applications
             .AsNoTracking()
-            .Where(a => a.ApplicationApprovalStatusId == (int)ApplicationStatus.Pending && (a.IsDeleted == null || a.IsDeleted == false));
+            .Where(a => (a.ApplicationApprovalStatusId == status || status == null) && (a.IsDeleted == null || a.IsDeleted == false));
 
 
         // 1.c) Apply filtration based on the filtration parameter
@@ -599,25 +667,10 @@ public class ApplicationService : IApplicationService
             }
         }
 
-        // 1.b) Status filter: resolve ID once, then filter by the id
-        if (!string.IsNullOrWhiteSpace(status))
-        {
-            var statusId = await _context.Statuses
-                .AsNoTracking()
-                .Where(s => s.StatusDesc == status
-                         || s.StatusDescFr == status
-                         || s.StatusDescAr == status)
-                .Select(s => s.ID)
-                .FirstOrDefaultAsync(ct);
-
-            if (statusId != 0)
-                filterQuery = filterQuery.Where(a => a.ApplicationApprovalStatusId == statusId);
-            else
-                filterQuery = filterQuery.Where(a => false); // nothing matches this status
-        }
+        
 
         // 2) Count on the skinny filter
-        var cacheKey = $"apps:count:kw={keyword ?? ""}:st={status ?? ""}";
+        var cacheKey = $"apps:count:kw={keyword ?? ""}:st={status}";
         var totalCount = await _cache.GetOrCreateAsync(cacheKey, e =>
         {
             e.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(5);
@@ -781,9 +834,25 @@ public class ApplicationService : IApplicationService
         }
     }
 
+    /// <summary>
+    /// Creates a notification for a user and saves it to the mobile database
+    /// </summary>
+    private async Task CreateNotificationAsync(long userId, string title, string message, CancellationToken ct = default)
+    {
+        var notification = new Notification
+        {
+            UserId = userId,
+            Title = title,
+            Message = message,
+            IsRead = false,
+            CreatedDate = DateTime.UtcNow
+        };
+        await _notificationService.AddAsync(notification, ct);
+    }
+
     private async Task CreateReceiptAsync(string applicationId, CancellationToken ct)
     {
-        var request = await _context.Applications
+        var request = await _dlsdbContext.Applications
             .FirstOrDefaultAsync(x => x.Id == applicationId, ct);
         if (request == null)
         {
@@ -791,7 +860,7 @@ public class ApplicationService : IApplicationService
             return;
         }
 
-        var applicationProcessFee = await _context.ApplicationProcessFees
+        var applicationProcessFee = await _dlsdbContext.ApplicationProcessFees
             .Where(x => x.ApplicationId == applicationId)
             .ToListAsync(ct);
 
@@ -827,7 +896,7 @@ public class ApplicationService : IApplicationService
         receiptWithDetailRequest.Receipt = receipt;
         receiptWithDetailRequest.ReceiptDetails = receiptDetail;
 
-        await _receiptService.CreateWithDeatailsAsync(receiptWithDetailRequest);
+        await _receiptService.CreateWithDetailsAsync(receiptWithDetailRequest);
     }
 
 }

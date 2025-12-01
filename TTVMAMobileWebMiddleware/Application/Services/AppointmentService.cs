@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using TTVMAMobileWebMiddleware.Application.Common;
 using TTVMAMobileWebMiddleware.Application.DTOs;
 using TTVMAMobileWebMiddleware.Application.Interfaces;
+using TTVMAMobileWebMiddleware.Application.Interfaces.Mobile;
 using TTVMAMobileWebMiddleware.Domain.Entities;
 using TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
 using TTVMAMobileWebMiddleware.Domain.Enums;
@@ -25,6 +26,7 @@ public class AppointmentService : IAppointmentService
 {
     private readonly MOBDbContext _context;
     private readonly ILogger<AppointmentService> _logger;
+    private readonly INotificationService _notificationService;
     private const int HoldDurationMinutes = 5;
     private readonly Dictionary<int, string> _processDescriptionCache = new();
 
@@ -53,9 +55,11 @@ public class AppointmentService : IAppointmentService
 
     public AppointmentService(
         MOBDbContext context,
+        INotificationService notificationService,
         ILogger<AppointmentService> logger)
     {
         _context = context;
+        _notificationService = notificationService;
         _logger = logger;
     }
 
@@ -150,8 +154,9 @@ public class AppointmentService : IAppointmentService
         }
         catch (Exception ex)
         {
-
-            throw;
+            var exception = new Exception($"Error searching appointment availability for application {request?.ApplicationOnlineId}");
+            exception.HelpLink = "appointment_search_availability_error";
+            throw exception;
         }
     }
 
@@ -166,12 +171,15 @@ public class AppointmentService : IAppointmentService
         await ValidateAppointmentPrerequisitesAsync(request.ApplicationOnlineId, request.Purpose, ct);
 
         // Check if slot is still available
+        var requestDate = request.AppointmentDate.Date;
+        var requestStartTime = request.StartTime;
         var conflictingAppointment = await _context.Agenda
             .FirstOrDefaultAsync(a =>
                 a.BranchId == request.StructureId &&
                 a.AppointmentDate.HasValue &&
-                a.AppointmentDate.Value.Date == request.AppointmentDate.Date &&
-                a.StartTime == request.StartTime &&
+                a.AppointmentDate.Value.Date == requestDate &&
+                a.StartTime.HasValue &&
+                a.StartTime.Value == requestStartTime &&
                 (!a.IsDeleted.HasValue || a.IsDeleted == false) &&
                 (a.StatusId == GetAgendaStatusId(AppointmentStatus.Confirmed) ||
                  (a.StatusId == GetAgendaStatusId(AppointmentStatus.Pending) || a.StatusId == GetAgendaStatusId(AppointmentStatus.NoShow) &&
@@ -320,12 +328,15 @@ public class AppointmentService : IAppointmentService
         }
 
         // Check for slot conflicts
+        var requestDate = request.AppointmentDate.Date;
+        var requestStartTime = request.StartTime;
         var conflictingAppointment = await _context.Agenda
             .FirstOrDefaultAsync(a =>
                 a.BranchId == request.StructureId &&
                 a.AppointmentDate.HasValue &&
-                a.AppointmentDate.Value.Date == request.AppointmentDate.Date &&
-                a.StartTime == request.StartTime &&
+                a.AppointmentDate.Value.Date == requestDate &&
+                a.StartTime.HasValue &&
+                a.StartTime.Value == requestStartTime &&
                 (!a.IsDeleted.HasValue || a.IsDeleted == false) &&
                 a.Id != holdAppointmentId &&
                 (a.StatusId == GetAgendaStatusId(AppointmentStatus.Confirmed) ||
@@ -445,7 +456,24 @@ public class AppointmentService : IAppointmentService
         _logger.LogInformation("Appointment {AppointmentId} confirmed by officer {OfficerUserId}",
             appointment.Id, officerUserId);
 
-        // TODO: Send notification to citizen
+        // Create notification for status update (Confirmed)
+        if (appointment.Application != null)
+        {
+            await _context.Entry(appointment.Application)
+                .Reference(a => a.Citizen)
+                .LoadAsync(ct);
+
+            if (appointment.Application.Citizen != null && appointment.Application.Citizen.UserId > 0)
+            {
+                var appointmentDateStr = appointment.AppointmentDate?.ToString("yyyy-MM-dd") ?? "N/A";
+                var startTimeStr = appointment.StartTime?.ToString("HH:mm") ?? "N/A";
+                await CreateNotificationAsync(
+                    appointment.Application.Citizen.UserId,
+                    "Appointment Confirmed",
+                    $"Your appointment for {GetPurposeFromAgendaType(appointment.AgendaTypeId)} has been confirmed. Date: {appointmentDateStr}, Time: {startTimeStr}.",
+                    ct);
+            }
+        }
 
         return new AppointmentConfirmResponse
         {
@@ -517,7 +545,23 @@ public class AppointmentService : IAppointmentService
         _logger.LogInformation("Appointment {AppointmentId} - {Count} alternatives proposed by officer {OfficerUserId}",
             appointment.Id, request.ProposedSlots.Count, officerUserId);
 
-        // TODO: Send notification to citizen with proposed alternatives
+        // Create notification for status update (Alternatives Proposed)
+        if (!string.IsNullOrEmpty(appointment.ApplicationId))
+        {
+            var application = await _context.Applications
+                .Include(a => a.Citizen)
+                .FirstOrDefaultAsync(a => a.Id == appointment.ApplicationId, ct);
+
+            if (application?.Citizen != null && application.Citizen.UserId > 0)
+            {
+                var slotsInfo = string.Join(", ", request.ProposedSlots.Select(s => $"{s.AppointmentDate:yyyy-MM-dd} at {s.StartTime:HH:mm}"));
+                await CreateNotificationAsync(
+                    application.Citizen.UserId,
+                    "Alternative Appointment Slots Proposed",
+                    $"Alternative appointment slots have been proposed for your {GetPurposeFromAgendaType(appointment.AgendaTypeId)} appointment: {slotsInfo}.",
+                    ct);
+            }
+        }
 
         return new AppointmentProposeResponse
         {
@@ -550,21 +594,28 @@ public class AppointmentService : IAppointmentService
 
         return MapToResponse(appointment);
     }
-    public async Task<List<AppointmentResponse>?> GetAppointments(CancellationToken ct = default)
+    public async Task<List<AppointmentResponse>?> GetAppointments(int? status = null, CancellationToken ct = default)
     {
-        var appointment = await _context.Agenda
+        // Normalize status input 
+
+        var query = _context.Agenda
+            .AsNoTracking()
             .Include(a => a.Application)
                 .ThenInclude(app => app.Citizen)
             .Include(a => a.Application)
                 .ThenInclude(app => app.ApplicationType)
             .Include(a => a.AgendaType)
-            .Where(x => (x.StatusId == (int)AppointmentStatus.Pending || x.StatusId == (int)AppointmentStatus.NoShow) && (x.IsDeleted == false || x.IsDeleted == null))
-            .ToListAsync();
+            .Include(a => a.Status)
+            .Where(x => ((x.StatusId == status) || status == null) && (x.IsDeleted == false || x.IsDeleted == null));
 
-        if (appointment == null)
+
+        var appointment = await query.ToListAsync(ct);
+
+        if (appointment == null || !appointment.Any())
         {
-            return null;
+            return new List<AppointmentResponse>();
         }
+
         List<AppointmentResponse> MappedAppointments = new List<AppointmentResponse>();
         foreach (var item in appointment)
         {
@@ -608,14 +659,14 @@ public class AppointmentService : IAppointmentService
         if (appointment == null)
         {
             var ex = new Exception($"Appointment {appointmentId} not found");
-                ex.HelpLink = "appointment_not_found";
+            ex.HelpLink = "appointment_not_found";
             throw ex;
         }
 
         if (appointment.StatusId != GetAgendaStatusId(AppointmentStatus.Confirmed))
         {
             var ex = new Exception($"Appointment must be Confirmed before marking as Done. Current status ID: {appointment.StatusId}");
-                ex.HelpLink = "appointment_status_not_confirmed_for_done";
+            ex.HelpLink = "appointment_status_not_confirmed_for_done";
             throw ex;
         }
 
@@ -626,6 +677,23 @@ public class AppointmentService : IAppointmentService
         appointment.ModifiedUserId = operatorUserId;
 
         await _context.SaveChangesAsync(ct);
+
+        // Create notification for status update (Completed)
+        if (appointment.Application != null)
+        {
+            await _context.Entry(appointment.Application)
+                .Reference(a => a.Citizen)
+                .LoadAsync(ct);
+
+            if (appointment.Application.Citizen != null && appointment.Application.Citizen.UserId > 0)
+            {
+                await CreateNotificationAsync(
+                    appointment.Application.Citizen.UserId,
+                    "Appointment Completed",
+                    $"Your appointment for {GetPurposeFromAgendaType(appointment.AgendaTypeId)} has been marked as completed.",
+                    ct);
+            }
+        }
 
         // Check if all required appointments for the application are done
         if (appointment.ApplicationId != null)
@@ -654,7 +722,7 @@ public class AppointmentService : IAppointmentService
         if (appointment == null)
         {
             var ex = new Exception($"Appointment {appointmentId} not found");
-                ex.HelpLink = "appointment_not_found";
+            ex.HelpLink = "appointment_not_found";
             throw ex;
         }
 
@@ -668,6 +736,24 @@ public class AppointmentService : IAppointmentService
 
         await _context.SaveChangesAsync(ct);
 
+        // Create notification for status update (Cancelled)
+        if (!string.IsNullOrEmpty(appointment.ApplicationId))
+        {
+            var application = await _context.Applications
+                .Include(a => a.Citizen)
+                .FirstOrDefaultAsync(a => a.Id == appointment.ApplicationId, ct);
+
+            if (application?.Citizen != null && application.Citizen.UserId > 0)
+            {
+                var reasonText = !string.IsNullOrEmpty(reason) ? $" Reason: {reason}" : "";
+                await CreateNotificationAsync(
+                    application.Citizen.UserId,
+                    "Appointment Cancelled",
+                    $"Your appointment for {GetPurposeFromAgendaType(appointment.AgendaTypeId)} has been cancelled.{reasonText}",
+                    ct);
+            }
+        }
+
         _logger.LogInformation("Appointment {AppointmentId} cancelled by user {UserId}", appointmentId, userId);
 
         return true;
@@ -680,7 +766,7 @@ public class AppointmentService : IAppointmentService
         if (!_purposeToAgendaTypeMap.TryGetValue(purpose, out var agendaTypeId))
         {
             var ex = new Exception($"No AgendaType mapping found for purpose: {purpose}");
-                ex.HelpLink = "agenda_type_mapping_missing";
+            ex.HelpLink = "agenda_type_mapping_missing";
             throw ex;
         }
         return agendaTypeId;
@@ -692,7 +778,7 @@ public class AppointmentService : IAppointmentService
         if (mapping.Key == default && mapping.Value == 0)
         {
             var ex = new Exception($"No AppointmentPurpose mapping found for AgendaTypeId: {agendaTypeId}");
-                ex.HelpLink = "appointment_purpose_mapping_missing";
+            ex.HelpLink = "appointment_purpose_mapping_missing";
             throw ex;
         }
         return mapping.Key;
@@ -703,7 +789,7 @@ public class AppointmentService : IAppointmentService
         if (!_statusToAgendaStatusMap.TryGetValue(status, out var agendaStatusId))
         {
             var ex = new Exception($"No AgendaStatus mapping found for status: {status}");
-                ex.HelpLink = "agenda_status_mapping_missing";
+            ex.HelpLink = "agenda_status_mapping_missing";
             throw ex;
         }
         return agendaStatusId;
@@ -715,7 +801,7 @@ public class AppointmentService : IAppointmentService
         if (mapping.Key == default && mapping.Value == 0)
         {
             var ex = new Exception($"No AppointmentStatus mapping found for AgendaStatusId: {agendaStatusId}");
-                ex.HelpLink = "appointment_status_mapping_missing";
+            ex.HelpLink = "appointment_status_mapping_missing";
             throw ex;
         }
         return mapping.Key;
@@ -732,7 +818,7 @@ public class AppointmentService : IAppointmentService
         if (application == null)
         {
             var ex = new Exception($"Application {applicationId} not found");
-                ex.HelpLink = "application_not_found";
+            ex.HelpLink = "application_not_found";
             throw ex;
         }
 
@@ -751,7 +837,7 @@ public class AppointmentService : IAppointmentService
         if (application.StatusId != (int)ApplicationStatus.Pending)
         {
             var ex = new Exception($"Application status must be Pending. Current status: {application.StatusId}");
-                ex.HelpLink = "application_status_must_be_pending";
+            ex.HelpLink = "application_status_must_be_pending";
             throw ex;
         }
     }
@@ -778,13 +864,18 @@ public class AppointmentService : IAppointmentService
                 var startTime = currentDate.AddHours(hour);
                 var endTime = startTime.AddMinutes(durationMin);
 
+                // Capture values for LINQ expression
+                var checkDate = currentDate;
+                var checkStartTime = startTime;
+
                 // Check if slot conflicts with existing appointments
                 var hasConflict = await _context.Agenda
                     .AnyAsync(a =>
                         a.BranchId == structureId &&
                         a.AppointmentDate.HasValue &&
-                        a.AppointmentDate.Value.Date == currentDate &&
-                        a.StartTime == startTime &&
+                        a.AppointmentDate.Value.Date == checkDate &&
+                        a.StartTime.HasValue &&
+                        a.StartTime.Value == checkStartTime &&
                         (!a.IsDeleted.HasValue || a.IsDeleted == false) &&
                         (a.StatusId == GetAgendaStatusId(AppointmentStatus.Confirmed) || a.StatusId == GetAgendaStatusId(AppointmentStatus.Pending) || a.StatusId == GetAgendaStatusId(AppointmentStatus.NoShow)), ct);
 
@@ -875,9 +966,39 @@ public class AppointmentService : IAppointmentService
 
             await _context.SaveChangesAsync(ct);
 
+            // Create notification for application finalization
+            await _context.Entry(application)
+                .Reference(a => a.Citizen)
+                .LoadAsync(ct);
+
+            if (application.Citizen != null && application.Citizen.UserId > 0)
+            {
+                await CreateNotificationAsync(
+                    application.Citizen.UserId,
+                    "Application Completed",
+                    $"Your application {application.ApplicationNumber ?? applicationId} has been completed. All required appointments have been finished.",
+                    ct);
+            }
+
             _logger.LogInformation("Application {ApplicationId} finalized - all appointments completed",
                 applicationId);
         }
+    }
+
+    /// <summary>
+    /// Creates a notification for a user and saves it to the mobile database
+    /// </summary>
+    private async Task CreateNotificationAsync(long userId, string title, string message, CancellationToken ct = default)
+    {
+        var notification = new Notification
+        {
+            UserId = userId,
+            Title = title,
+            Message = message,
+            IsRead = false,
+            CreatedDate = DateTime.UtcNow
+        };
+        await _notificationService.AddAsync(notification, ct);
     }
 
     private AppointmentResponse MapToResponse(Agendum appointment)
@@ -886,17 +1007,23 @@ public class AppointmentService : IAppointmentService
         var application = appointment.Application
             ?? (!string.IsNullOrEmpty(appointment.ApplicationId)
                 ? _context.Applications
+                    .AsNoTracking()
                     .Include(a => a.Citizen)
                     .Include(a => a.ApplicationType)
                     .FirstOrDefault(a => a.Id == appointment.ApplicationId)
                 : null);
 
         var agendaType = appointment.AgendaType
-            ?? _context.AgendaTypes.FirstOrDefault(a => a.Id == appointment.AgendaTypeId);
+            ?? _context.AgendaTypes.AsNoTracking().FirstOrDefault(a => a.Id == appointment.AgendaTypeId);
+
+        var agendaStatus = appointment.Status
+            ?? (appointment.StatusId.HasValue
+                ? _context.AgendaStatuses.AsNoTracking().FirstOrDefault(s => s.Id == appointment.StatusId.Value)
+                : null);
 
         if (appointment.BranchId.HasValue)
         {
-            var structure = _context.Structures.FirstOrDefault(s => s.Id == appointment.BranchId.Value);
+            var structure = _context.Structures.AsNoTracking().FirstOrDefault(s => s.Id == appointment.BranchId.Value);
             structureName = structure?.Name ?? string.Empty;
         }
 
@@ -938,6 +1065,10 @@ public class AppointmentService : IAppointmentService
             AppointmentType = appointmentType,
             Purpose = GetPurposeFromAgendaType(appointment.AgendaTypeId),
             Status = appointment.StatusId.HasValue ? GetStatusFromAgendaStatus(appointment.StatusId.Value) : AppointmentStatus.Pending,
+            StatusId = appointment.StatusId,
+            StatusEn = agendaStatus?.DescriptionEN,
+            StatusAr = agendaStatus?.DescriptionAR,
+            StatusFr = agendaStatus?.DescriptionFR,
             StructureId = appointment.BranchId ?? 0,
             StructureName = structureName,
             AppointmentDate = appointment.AppointmentDate ?? DateTime.MinValue,

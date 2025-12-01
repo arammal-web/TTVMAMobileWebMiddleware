@@ -32,7 +32,7 @@ namespace TTVMAMobileWebMiddleware.Domain.Entities.DLS
         /// <summary>
         /// Date of birth of the citizen
         /// </summary>
-        public DateTime DateOfBirth { get; set; }
+        public DateTime? DateOfBirth { get; set; }
 
         /// <summary>
         /// Place of birth of the citizen

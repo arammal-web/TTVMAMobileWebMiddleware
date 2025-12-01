@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using Shared.Extensions;
 using System.Text;
 using TTVMAMobileWebMiddleware.Application.Interfaces;
+using TTVMAMobileWebMiddleware.Application.Interfaces.Mobile;
 using TTVMAMobileWebMiddleware.Application.Services;
 using TTVMAMobileWebMiddleware.Domain.Entities;
 using TTVMAMobileWebMiddleware.Infrastructure.ExternalAPIServices;
@@ -123,6 +124,7 @@ builder.Services.AddScoped<ICitizenService, CitizenService>();
 builder.Services.AddScoped<IApplicationService, ApplicationService>();
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 builder.Services.AddScoped<IReceiptService, ReceiptService>();
+builder.Services.AddScoped<INotificationService,  NotificationService>();
 
 // External API HTTP Client
 builder.Services.AddHttpClient<IExternalApiService, ExternalApiService>();

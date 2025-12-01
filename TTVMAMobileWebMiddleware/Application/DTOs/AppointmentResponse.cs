@@ -16,6 +16,10 @@ public class AppointmentResponse
     public string AppointmentType { get; set; } = string.Empty;
     public AppointmentPurpose Purpose { get; set; }
     public AppointmentStatus Status { get; set; }
+    public int? StatusId { get; set; }
+    public string? StatusEn { get; set; }
+    public string? StatusAr { get; set; }
+    public string? StatusFr { get; set; }
     public int StructureId { get; set; }
     public string StructureName { get; set; } = null!;
     public DateTime AppointmentDate { get; set; }

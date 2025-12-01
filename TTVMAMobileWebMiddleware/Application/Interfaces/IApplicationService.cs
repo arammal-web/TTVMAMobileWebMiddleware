@@ -20,7 +20,7 @@ public interface IApplicationService
     Task<bool> RejectApplication(string id, CancellationToken ct = default);
     Task<bool> DocumentRequiredApplication(string id, CancellationToken ct = default);
 
-    Task<(IEnumerable<ApplicationListItemDto> items, PaginationMetaData metaData)> GetApplicationsAsync(Pagination pagination, string? keyword = null, string? status = null, string? filtration = "all", int? userId = null, int? branchId = null, CancellationToken ct = default);
+    Task<(IEnumerable<ApplicationListItemDto> items, PaginationMetaData metaData)> GetApplicationsAsync(Pagination pagination, string? keyword = null, int? status = null, string? filtration = "all", int? userId = null, int? branchId = null, CancellationToken ct = default);
 
 }
 

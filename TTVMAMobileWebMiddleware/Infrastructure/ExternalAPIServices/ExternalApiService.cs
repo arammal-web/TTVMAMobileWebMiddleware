@@ -97,7 +97,7 @@ public class ExternalApiService : IExternalApiService
             {
 
                 var ex = new Exception($"Failed to create application in DLS. Status: {statusCode}, Error: {responseContent}, Request Payload: {json}");
-               ex.HelpLink = "Failed_Receipt_create";
+                ex.HelpLink = "failed_application_create";
                 throw ex;
 
             }
@@ -165,7 +165,7 @@ public class ExternalApiService : IExternalApiService
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
             // Use relative endpoint path (BaseAddress is already set)
-            var endpoint = "/api/v1.0/IntegrationMiddleware/create-with-address-doc";
+            var endpoint = "/api/v1.0/IntegrationMiddleware/create-with-address-doc-md";
             _logger.LogDebug("Calling endpoint: {Endpoint}", endpoint);
             var response = await _httpClient.PostAsync(endpoint, content, ct);
 
@@ -189,7 +189,7 @@ public class ExternalApiService : IExternalApiService
             {
 
                 var ex = new Exception($"Failed to create citizen in DLS. Status: {statusCode}, Error: {responseContent}, Request Payload: {json}");
-                ex.HelpLink = "Failed_Receipt_create";
+                ex.HelpLink = "failed_citizen_create";
                 throw ex;
             }
         }
@@ -278,24 +278,23 @@ public class ExternalApiService : IExternalApiService
                 throw ex;
             }
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
-            var ex = new Exception($"Failed to create Receipt in DLS.");
-            ex.HelpLink = "Failed_Receipt_create";
-            throw ex;
+            var exception = new Exception($"Failed to create Receipt in DLS. HTTP Error: {ex.Message}");
+            exception.HelpLink = "failed_receipt_create";
+            throw exception;
         }
-        catch (TaskCanceledException)
+        catch (TaskCanceledException ex)
         {
-            var ex = new Exception($"Failed to create Receipt in DLS.").WithHelpLink("Failed_Receipt_create");
-            ex.HelpLink = "Failed_Receipt_create";
-            throw ex;
+            var exception = new Exception($"Failed to create Receipt in DLS. Timeout: {ex.Message}");
+            exception.HelpLink = "failed_receipt_create";
+            throw exception;
         }
-        catch (Exception s)
+        catch (Exception ex)
         {
-            var ex = new Exception($"Failed to create Receipt in DLS.").WithHelpLink("Failed_Receipt_create");
-            ex.HelpLink = "Failed_Receipt_create";
-            throw ex;
-
+            var exception = new Exception($"Failed to create Receipt in DLS. Error: {ex.Message}");
+            exception.HelpLink = "failed_receipt_create";
+            throw exception;
         }
     }
 }

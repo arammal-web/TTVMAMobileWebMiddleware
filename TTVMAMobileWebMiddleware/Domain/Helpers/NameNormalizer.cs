@@ -163,14 +163,103 @@ public static class NameNormalizer
         normalized = StripPunctuation(normalized);
         return normalized.Trim().ToUpperInvariant();
     }
-    public static string? NormalizeDOBo(string? dob)
+    /// <summary>
+    /// Normalizes date of birth to YYYY-MM-DD format
+    /// Accepts common formats: YYYY/MM/DD, DD-MM-YYYY, YYYY-MM-DD, etc.
+    /// </summary>
+    public static string? NormalizeDateOfBirth(string? dob)
     {
         if (string.IsNullOrWhiteSpace(dob))
             return null;
 
+        // Convert Arabic digits to ASCII
         var normalized = ToAsciiDigits(dob);
-        normalized = StripPunctuation(normalized);
-        return normalized.Trim().ToUpperInvariant();
+        normalized = normalized.Trim();
+
+        // Try parsing with common date formats
+        var dateFormats = new[]
+        {
+            "yyyy-MM-dd",
+            "yyyy/MM/dd",
+            "dd-MM-yyyy",
+            "dd/MM/yyyy",
+            "MM/dd/yyyy",
+            "MM-dd-yyyy",
+            "yyyy.MM.dd",
+            "dd.MM.yyyy",
+            "dd MMM yyyy", // e.g., "12 Apr 1995"
+            "dd MMMM yyyy", // e.g., "12 April 1995"
+            "MMM dd, yyyy", // e.g., "Apr 12, 1995"
+            "MMMM dd, yyyy" // e.g., "April 12, 1995"
+        };
+
+        // Try parsing with invariant culture first
+        if (DateTime.TryParseExact(normalized, dateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedDate))
+        {
+            return parsedDate.ToString("yyyy-MM-dd");
+        }
+
+        // Try lenient parsing
+        if (DateTime.TryParse(normalized, CultureInfo.InvariantCulture, DateTimeStyles.None, out parsedDate))
+        {
+            return parsedDate.ToString("yyyy-MM-dd");
+        }
+
+        // If parsing fails, try to extract date parts from common patterns
+        // Pattern: YYYYMMDD or DDMMYYYY (8 digits)
+        var digitsOnly = new string(normalized.Where(char.IsDigit).ToArray());
+        if (digitsOnly.Length == 8)
+        {
+            // Try YYYYMMDD format first
+            if (int.TryParse(digitsOnly.Substring(0, 4), out var year) &&
+                int.TryParse(digitsOnly.Substring(4, 2), out var month) &&
+                int.TryParse(digitsOnly.Substring(6, 2), out var day) &&
+                year >= 1900 && year <= 2100 &&
+                month >= 1 && month <= 12 &&
+                day >= 1 && day <= 31)
+            {
+                try
+                {
+                    var date = new DateTime(year, month, day);
+                    return date.ToString("yyyy-MM-dd");
+                }
+                catch
+                {
+                    // Invalid date, try DDMMYYYY format
+                }
+            }
+
+            // Try DDMMYYYY format
+            if (int.TryParse(digitsOnly.Substring(0, 2), out var day2) &&
+                int.TryParse(digitsOnly.Substring(2, 2), out var month2) &&
+                int.TryParse(digitsOnly.Substring(4, 4), out var year2) &&
+                year2 >= 1900 && year2 <= 2100 &&
+                month2 >= 1 && month2 <= 12 &&
+                day2 >= 1 && day2 <= 31)
+            {
+                try
+                {
+                    var date = new DateTime(year2, month2, day2);
+                    return date.ToString("yyyy-MM-dd");
+                }
+                catch
+                {
+                    // Invalid date
+                }
+            }
+        }
+
+        // If all parsing fails, return null
+        return null;
+    }
+
+    /// <summary>
+    /// Legacy method name - redirects to NormalizeDateOfBirth
+    /// </summary>
+    [Obsolete("Use NormalizeDateOfBirth instead")]
+    public static string? NormalizeDOBo(string? dob)
+    {
+        return NormalizeDateOfBirth(dob);
     }
 
     private static string ToAsciiDigits(string input)

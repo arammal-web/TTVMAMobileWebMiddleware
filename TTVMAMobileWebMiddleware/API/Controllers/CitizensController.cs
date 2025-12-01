@@ -48,8 +48,9 @@ public class CitizensController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error searching for citizens");
-            return StatusCode(500, new { error = "An error occurred while searching for citizens" });
+            var exception = new Exception("Error searching for citizens");
+            exception.HelpLink = "citizen_search_local_error";
+            throw exception;
         }
     }
 
@@ -60,19 +61,20 @@ public class CitizensController : ControllerBase
     /// <returns>List of candidate matches with scores</returns>
     /// 
     [HttpGet("search-online")]
-    public async Task<IActionResult> SearchOnline([FromQuery] Pagination pagination)
+    public async Task<IActionResult> SearchOnline([FromQuery] Pagination pagination, [FromQuery] int? status = null)
     {
         try
         {
-            var (items, meta) = await _citizenService.SearchMobileCitizen(pagination);
+            var (items, meta) = await _citizenService.SearchMobileCitizen(pagination, status);
             Response.Headers.Add("Pagination-MetaData", System.Text.Json.JsonSerializer.Serialize(meta));
 
             return Ok(items);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error searching for citizens");
-            return StatusCode(500, new { error = "An error occurred while searching for citizens" });
+            var exception = new Exception("Error searching for online citizens");
+            exception.HelpLink = "citizen_search_online_error";
+            throw exception;
         }
     }
 
@@ -92,8 +94,9 @@ public class CitizensController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error searching for citizens");
-            return StatusCode(500, new { error = "An error occurred while searching for citizens" });
+            var exception = new Exception($"Error retrieving online citizen {citizenId}");
+            exception.HelpLink = "citizen_get_online_error";
+            throw exception;
         }
     }
 
@@ -117,8 +120,9 @@ public class CitizensController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error linking citizen {CitizenId}", request.CitizenOnlineId);
-            return StatusCode(500, new { error = "An error occurred while linking the citizen" });
+            var exception = new Exception($"Error linking citizen {request.CitizenOnlineId}");
+            exception.HelpLink = "citizen_link_error";
+            throw exception;
         }
     }
 
@@ -143,8 +147,9 @@ public class CitizensController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating local citizen for {CitizenId}", request.CitizenOnlineId);
-            return StatusCode(500, new { error = "An error occurred while creating the local citizen" });
+            var exception = new Exception($"Error creating local citizen for {request.CitizenOnlineId}");
+            exception.HelpLink = "citizen_create_local_error";
+            throw exception;
         }
     }
 
@@ -172,8 +177,9 @@ public class CitizensController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error merging citizen {CitizenId}", request.CitizenOnlineId);
-            return StatusCode(500, new { error = "An error occurred while merging the citizen" });
+            var exception = new Exception($"Error merging citizen {request.CitizenOnlineId}");
+            exception.HelpLink = "citizen_merge_error";
+            throw exception;
         }
     }
 
@@ -205,8 +211,9 @@ public class CitizensController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error approving citizen {CitizenId}", citizenId);
-            return StatusCode(500, new { error = "An error occurred while approving the citizen" });
+            var exception = new Exception($"Error approving citizen {citizenId}");
+            exception.HelpLink = "citizen_approve_error";
+            throw exception;
         }
     }
 

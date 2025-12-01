@@ -15,7 +15,7 @@ public interface ICitizenService
     Task<CitizenLinkResponse> CreateLocalAndApproveAsync(CitizenCreateLocalRequest request, int userId, CancellationToken ct = default);
     Task<CitizenLinkResponse> ReviewAndMergeAsync(CitizenLinkRequest request, int userId, CancellationToken ct = default);
     Task<bool> ApproveOnlineCitizenAsync(CitizenApproveRequest request, int userId, CancellationToken ct = default);
-    Task<(IEnumerable<Citizen> items, PaginationMetaData metaData)> SearchMobileCitizen(Pagination pagination, CancellationToken ct = default);
+    Task<(IEnumerable<CitizenListItemDto> items, PaginationMetaData metaData)> SearchMobileCitizen(Pagination pagination, int? status = null, CancellationToken ct = default);
     Task<CitizenSearchResponse> SearchLocalAsync(CitizenSearchRequest request, CancellationToken ct = default);
     Task<Citizen> GetOnlineCitizenById(int citizenId, CancellationToken ct = default);
     Task<bool> RejectCitizen(int id, string reason, CancellationToken ct = default);

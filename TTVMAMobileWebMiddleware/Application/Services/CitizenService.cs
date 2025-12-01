@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using TTVMAMobileWebMiddleware.Application.Common;
 using TTVMAMobileWebMiddleware.Application.DTOs;
 using TTVMAMobileWebMiddleware.Application.Interfaces;
+using TTVMAMobileWebMiddleware.Application.Interfaces.Mobile;
 using TTVMAMobileWebMiddleware.Domain.Entities;
 using TTVMAMobileWebMiddleware.Domain.Entities.DLS;
 using TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
@@ -29,17 +30,20 @@ public class CitizenService : ICitizenService
     private readonly MOBDbContext _context;
     private readonly DLSDbContext _dlsContext;
     private readonly IExternalApiService _externalApiService;
+    private readonly INotificationService _notificationService;
     private readonly ILogger<CitizenService> _logger;
 
     public CitizenService(
         MOBDbContext context,
         DLSDbContext dlsContext,
         IExternalApiService externalApiService,
+        INotificationService notificationService,
         ILogger<CitizenService> logger)
     {
         _context = context;
         _dlsContext = dlsContext;
         _externalApiService = externalApiService;
+        _notificationService = notificationService;
         _logger = logger;
     }
 
@@ -48,12 +52,41 @@ public class CitizenService : ICitizenService
     /// </summary>
     public async Task<CitizenLinkResponse> LinkAndApproveAsync(CitizenLinkRequest request, int userId, CancellationToken ct = default)
     {
+        // Input validation
+        if (request == null)
+        {
+            var ex = new Exception("Request is required");
+            ex.HelpLink = "request_required";
+            throw ex;
+        }
+
+        if (request.CitizenOnlineId <= 0)
+        {
+            var ex = new Exception("CitizenOnlineId must be greater than 0");
+            ex.HelpLink = "invalid_citizen_online_id";
+            throw ex;
+        }
+
+        if (request.CitizenLocalId <= 0)
+        {
+            var ex = new Exception("CitizenLocalId must be greater than 0");
+            ex.HelpLink = "invalid_citizen_local_id";
+            throw ex;
+        }
+
+        if (userId <= 0)
+        {
+            var ex = new Exception("UserId must be greater than 0");
+            ex.HelpLink = "invalid_user_id";
+            throw ex;
+        }
+
         using var transaction = await _context.Database.BeginTransactionAsync(ct);
         try
         {
             // 1. Validate online citizen exists
             var onlineCitizen = await _context.Citizens
-                .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && !c.IsDeleted.Value, ct);
+                .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && (c.IsDeleted == null || c.IsDeleted == false), ct);
 
             if (onlineCitizen == null)
             {
@@ -61,6 +94,23 @@ public class CitizenService : ICitizenService
                 ex.HelpLink = "online_citizen_not_found";
                 throw ex;
             }
+
+            // Business rule validation: Check if citizen is deleted
+            if (onlineCitizen.IsDeleted == true)
+            {
+                var ex = new Exception($"Online citizen {request.CitizenOnlineId} is deleted");
+                ex.HelpLink = "citizen_is_deleted";
+                throw ex;
+            }
+
+            // Business rule validation: Check if citizen is already approved
+            if (onlineCitizen.ApprovalStatusId == (int)CitizenStatus.Approved)
+            {
+                var ex = new Exception($"Citizen {request.CitizenOnlineId} is already approved");
+                ex.HelpLink = "citizen_already_approved";
+                throw ex;
+            }
+
             // 2. Validate local citizen exists
             var localCitizen = await _dlsContext.Citizens
                 .FirstOrDefaultAsync(c => c.Id == request.CitizenLocalId && c.IsDeleted != true, ct);
@@ -71,6 +121,23 @@ public class CitizenService : ICitizenService
                 ex.HelpLink = "local_citizen_not_found";
                 throw ex;
             }
+
+            // Business rule validation: Validate link method
+            if (!Enum.IsDefined(typeof(LinkMethod), request.LinkMethod))
+            {
+                var ex = new Exception($"Invalid link method: {request.LinkMethod}");
+                ex.HelpLink = "invalid_link_method";
+                throw ex;
+            }
+
+            // Business rule validation: Validate confidence score range (0.0 to 1.0)
+            if (request.Confidence < 0.0m || request.Confidence > 1.0m)
+            {
+                var ex = new Exception($"Confidence score must be between 0.0 and 1.0. Current value: {request.Confidence}");
+                ex.HelpLink = "invalid_confidence_score";
+                throw ex;
+            }
+
             // 3. Check if link already exists
             var existingLink = await _context.CitizenLinks
                 .FirstOrDefaultAsync(cl => cl.CitizenOnlineId == request.CitizenOnlineId, ct);
@@ -121,6 +188,13 @@ public class CitizenService : ICitizenService
             onlineCitizen.ValidationDate = DateTime.UtcNow;
             onlineCitizen.ValidationUserId = userId;
 
+            // 6.1. Create notification for status update (Approved)
+            await CreateNotificationAsync(
+                onlineCitizen.UserId,
+                "Citizen Application Linked",
+                "Your citizen application has been linked and approved successfully.",
+                ct);
+
             // 7. Sync DL snapshot if exists
             var dlSnapshot = await GetDrivingLicenseSnapshotAsync(request.CitizenLocalId, ct);
 
@@ -136,9 +210,10 @@ public class CitizenService : ICitizenService
                 .FirstOrDefaultAsync(ct);
 
             // 9. Add driving license and details to mobile database if they exist in DLS
+            DrivingLicense? mobileDrivingLicense = null;
             if (dlsDrivingLicense != null)
             {
-                var mobileDrivingLicense = new DrivingLicense
+                mobileDrivingLicense = new DrivingLicense
                 {
                     CitizenId = request.CitizenOnlineId,
                     ApplicationId = dlsDrivingLicense.ApplicationId,
@@ -180,9 +255,14 @@ public class CitizenService : ICitizenService
                 };
 
                 _context.DrivingLicenses.Add(mobileDrivingLicense);
-                await _context.SaveChangesAsync(ct);
+            }
 
-                // Add driving license details if they exist
+            // Batch save: Save all changes (onlineCitizen, citizenLink, mobileDrivingLicense, notification) in one call
+            await _context.SaveChangesAsync(ct);
+
+            // Add driving license details if they exist (after mobileDrivingLicense.Id is available)
+            if (dlsDrivingLicense != null && mobileDrivingLicense != null)
+            {
                 var dlsDetails = dlsDrivingLicense.DrivingLicenseDetails
                     .Where(d => !d.IsDeleted)
                     .ToList();
@@ -214,12 +294,12 @@ public class CitizenService : ICitizenService
                     }
                     _context.DrivingLicenseDetails.AddRange(mobileDetails);
 
+                    // Save driving license details
                     await _context.SaveChangesAsync(ct);
                 }
             }
 
-            // 10. Save changes
-            await _context.SaveChangesAsync(ct);
+            // Save DLS context changes if local citizen was updated
             if (localUpdated)
                 await _dlsContext.SaveChangesAsync(ct);
 
@@ -241,8 +321,9 @@ public class CitizenService : ICitizenService
         catch (Exception ex)
         {
             await transaction.RollbackAsync(ct);
-            _logger.LogError(ex, "Error linking citizen {CitizenId}", request.CitizenOnlineId);
-            throw;
+            var exception = new Exception($"Error linking citizen {request.CitizenOnlineId}");
+            exception.HelpLink = "citizen_link_error";
+            throw exception;
         }
     }
 
@@ -251,6 +332,28 @@ public class CitizenService : ICitizenService
     /// </summary>
     public async Task<CitizenLinkResponse> CreateLocalAndApproveAsync(CitizenCreateLocalRequest request, int userId, CancellationToken ct = default)
     {
+        // Input validation
+        if (request == null)
+        {
+            var ex = new Exception("Request is required");
+            ex.HelpLink = "request_required";
+            throw ex;
+        }
+
+        if (request.CitizenOnlineId <= 0)
+        {
+            var ex = new Exception("CitizenOnlineId must be greater than 0");
+            ex.HelpLink = "invalid_citizen_online_id";
+            throw ex;
+        }
+
+        //if (userId <= 0)
+        //{
+        //    var ex = new Exception("UserId must be greater than 0");
+        //    ex.HelpLink = "invalid_user_id";
+        //    throw ex;
+        //}
+
         using var transaction = await _context.Database.BeginTransactionAsync(ct);
         try
         {
@@ -260,7 +363,7 @@ public class CitizenService : ICitizenService
                 .Include(c => c.CitizenIdentityDocuments)
                 .Include(c => c.CitizenSignatures)
                 .Include(c => c.CitizenFaceImages)
-                .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && !c.IsDeleted.Value, ct);
+                .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && (c.IsDeleted == null || c.IsDeleted == false), ct);
 
             if (onlineCitizen == null)
             {
@@ -422,7 +525,7 @@ public class CitizenService : ICitizenService
             // Reload onlineCitizen without navigation properties to avoid tracking issues
             // This ensures we're working with a clean tracked entity when saving
             var onlineCitizenForSave = await _context.Citizens
-                .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && !c.IsDeleted.Value, ct);
+                .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && (c.IsDeleted == null || c.IsDeleted == false), ct);
 
             if (onlineCitizenForSave == null)
             {
@@ -449,8 +552,9 @@ public class CitizenService : ICitizenService
         catch (Exception ex)
         {
             await transaction.RollbackAsync(ct);
-            _logger.LogError(ex, "Error creating local citizen for {CitizenId}", request.CitizenOnlineId);
-            throw;
+            var exception = new Exception($"Error creating local citizen for {request.CitizenOnlineId}");
+            exception.HelpLink = "citizen_create_local_error";
+            throw exception;
         }
     }
 
@@ -472,8 +576,30 @@ public class CitizenService : ICitizenService
     /// </summary>
     public async Task<bool> ApproveOnlineCitizenAsync(CitizenApproveRequest request, int userId, CancellationToken ct = default)
     {
+        // Input validation
+        if (request == null)
+        {
+            var ex = new Exception("Request is required");
+            ex.HelpLink = "request_required";
+            throw ex;
+        }
+
+        if (request.CitizenOnlineId <= 0)
+        {
+            var ex = new Exception("CitizenOnlineId must be greater than 0");
+            ex.HelpLink = "invalid_citizen_online_id";
+            throw ex;
+        }
+
+        if (userId <= 0)
+        {
+            var ex = new Exception("UserId must be greater than 0");
+            ex.HelpLink = "invalid_user_id";
+            throw ex;
+        }
+
         var onlineCitizen = await _context.Citizens
-            .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && !c.IsDeleted.Value, ct);
+            .FirstOrDefaultAsync(c => c.Id == request.CitizenOnlineId && (c.IsDeleted == null || c.IsDeleted == false), ct);
 
         if (onlineCitizen == null)
         {
@@ -487,6 +613,13 @@ public class CitizenService : ICitizenService
             onlineCitizen.ApprovalStatusId = (int)CitizenStatus.Approved;
             onlineCitizen.ValidationDate = DateTime.UtcNow;
             onlineCitizen.ValidationUserId = userId;
+
+            // Create notification for status update (Approved)
+            await CreateNotificationAsync(
+                onlineCitizen.UserId,
+                "Citizen Application Approved",
+                "Your citizen application has been approved successfully.",
+                ct);
         }
         else
         {
@@ -495,8 +628,14 @@ public class CitizenService : ICitizenService
             onlineCitizen.ValidationDate = DateTime.UtcNow;
             onlineCitizen.ValidationUserId = userId;
             onlineCitizen.Notes = $"Rejected: {request.RejectionReason}";
-        }
 
+            // Create notification for status update (Rejected)
+            await CreateNotificationAsync(
+                onlineCitizen.UserId,
+                "Citizen Application Rejected",
+                $"Your citizen application has been rejected. Reason: {request.RejectionReason ?? "No reason provided"}",
+                ct);
+        }
         await _context.SaveChangesAsync(ct);
 
         _logger.LogInformation(
@@ -512,8 +651,33 @@ public class CitizenService : ICitizenService
     /// </summary>
     public async Task<CitizenSearchResponse> SearchLocalAsync(CitizenSearchRequest request, CancellationToken ct = default)
     {
+        // Input validation
+        if (request == null)
+        {
+            var ex = new Exception("Search request is required");
+            ex.HelpLink = "search_request_required";
+            throw ex;
+        }
+
+        // Validate that at least one search criteria is provided
+        var hasSearchCriteria = !string.IsNullOrWhiteSpace(request.NationalId) ||
+                               !string.IsNullOrWhiteSpace(request.PassportNumber) ||
+                               !string.IsNullOrWhiteSpace(request.RegistrationNumber) ||
+                               !string.IsNullOrWhiteSpace(request.FirstNameAr) ||
+                               !string.IsNullOrWhiteSpace(request.FirstNameEn) ||
+                               !string.IsNullOrWhiteSpace(request.LastNameAr) ||
+                               !string.IsNullOrWhiteSpace(request.LastNameEn) ||
+                               !string.IsNullOrWhiteSpace(request.Mobile);
+
+        if (!hasSearchCriteria)
+        {
+            var ex = new Exception("At least one search criteria is required (NationalId, PassportNumber, RegistrationNumber, Name, or Mobile)");
+            ex.HelpLink = "search_criteria_required";
+            throw ex;
+        }
+
         var stopwatch = Stopwatch.StartNew();
-        //  var queryId = QueryIdGenerator.GenerateQueryId();
+        var queryId = QueryIdGenerator.GenerateQueryId();
 
         try
         {
@@ -529,7 +693,10 @@ public class CitizenService : ICitizenService
             // Exact key searches (document-first as per DLS behavior)
             if (!string.IsNullOrEmpty(normalized.NationalId))
             {
-                var byNid = await _dlsContext.Citizens.Include(x => x.CitizenIdentityDocuments)
+                var byNid = await _dlsContext.Citizens
+                    .AsNoTracking()
+                    .Include(x => x.CitizenAddresses)
+                    .Include(x => x.CitizenIdentityDocuments)
                     .Where(c => c.NationalId == normalized.NationalId && c.IsDeleted != true)
                     .ToListAsync(ct);
                 foreach (var c in byNid) candidates.Add(c);
@@ -537,7 +704,10 @@ public class CitizenService : ICitizenService
 
             if (!string.IsNullOrEmpty(normalized.PassportNumber))
             {
-                var byPassport = await _dlsContext.Citizens.Include(x => x.CitizenIdentityDocuments)
+                var byPassport = await _dlsContext.Citizens
+                    .AsNoTracking()
+                    .Include(x => x.CitizenAddresses)
+                    .Include(x => x.CitizenIdentityDocuments)
                     .Where(c => c.PassportNumber == normalized.PassportNumber && c.IsDeleted != true)
                     .ToListAsync(ct);
                 foreach (var c in byPassport) candidates.Add(c);
@@ -545,7 +715,10 @@ public class CitizenService : ICitizenService
 
             if (!string.IsNullOrEmpty(normalized.RegistrationNumber))
             {
-                var byReg = await _dlsContext.Citizens.Include(x => x.CitizenIdentityDocuments)
+                var byReg = await _dlsContext.Citizens
+                    .AsNoTracking()
+                    .Include(x => x.CitizenAddresses)
+                    .Include(x => x.CitizenIdentityDocuments)
                     .Where(c => c.RegisterId == normalized.RegistrationNumber && c.IsDeleted != true)
                     .ToListAsync(ct);
                 foreach (var c in byReg) candidates.Add(c);
@@ -561,17 +734,20 @@ public class CitizenService : ICitizenService
                     !string.IsNullOrEmpty(normalized.DateOfBirth))
                 {
                     var byArabicNameDob = await _dlsContext.Citizens
-                    .Include(x => x.CitizenIdentityDocuments)
+                        .AsNoTracking()
+                        .Include(x => x.CitizenAddresses)
+                        .Include(x => x.CitizenIdentityDocuments)
                         .Where(c =>
-                           ((c.FirstNameSecondLang == normalized.FirstNameEn &&
-                            c.LastNameSecondLang == normalized.LastNameEn) ||
-                            (c.FirstName == normalized.FirstNameAr &&
-                            c.FathersName == normalized.FatherNameAr &&
-                            c.LastName == normalized.LastNameAr)) && 
-                            (c.FirstName == normalized.FirstNameEn &&
-                            c.LastName == normalized.LastNameEn) ||
-                            c.DateOfBirth.Date == Convert.ToDateTime(normalized.DateOfBirth).Date &&
-                            c.IsDeleted != true)
+                                ((c.FirstNameSecondLang == normalized.FirstNameEn &&
+                                  c.LastNameSecondLang == normalized.LastNameEn) ||
+                                 (c.FirstName == normalized.FirstNameAr &&
+                                  c.FathersName == normalized.FatherNameAr &&
+                                  c.LastName == normalized.LastNameAr)) &&
+                                c.DateOfBirth.HasValue &&
+                                normalized.DateOfBirth != null &&
+                                ParseNormalizedDate(normalized.DateOfBirth).HasValue &&
+                                c.DateOfBirth.Value.Date == ParseNormalizedDate(normalized.DateOfBirth).Value.Date &&
+                                c.IsDeleted != true)
                         .ToListAsync(ct);
                     foreach (var c in byArabicNameDob) candidates.Add(c);
                 }
@@ -581,7 +757,9 @@ public class CitizenService : ICitizenService
                     !string.IsNullOrEmpty(normalized.LastNameEn))
                 {
                     var byLatinNameDob = await _dlsContext.Citizens
-                    .Include(x => x.CitizenIdentityDocuments)
+                        .AsNoTracking()
+                        .Include(x => x.CitizenAddresses)
+                        .Include(x => x.CitizenIdentityDocuments)
                         .Where(c =>
                            ((c.FirstNameSecondLang == normalized.FirstNameEn &&
                             c.LastNameSecondLang == normalized.LastNameEn) ||
@@ -601,11 +779,16 @@ public class CitizenService : ICitizenService
                     if (!string.IsNullOrEmpty(normalized.DateOfBirth))
                     {
                         var byVariantAr = await _dlsContext.Citizens
-                    .Include(x => x.CitizenIdentityDocuments)
+                            .AsNoTracking()
+                            .Include(x => x.CitizenAddresses)
+                            .Include(x => x.CitizenIdentityDocuments)
                             .Where(c =>
                                 c.FirstName == variantAr &&
-                                c.DateOfBirth.Date == Convert.ToDateTime(normalized.DateOfBirth).Date &&
-                                !c.IsDeleted.Value)
+                                c.DateOfBirth.HasValue &&
+                                normalized.DateOfBirth != null &&
+                                ParseNormalizedDate(normalized.DateOfBirth).HasValue &&
+                                c.DateOfBirth.Value.Date == ParseNormalizedDate(normalized.DateOfBirth).Value.Date &&
+                                (c.IsDeleted == null || c.IsDeleted == false))
                             .ToListAsync(ct);
                         foreach (var c in byVariantAr) candidates.Add(c);
                     }
@@ -616,11 +799,16 @@ public class CitizenService : ICitizenService
                     if (!string.IsNullOrEmpty(normalized.DateOfBirth))
                     {
                         var byVariantEn = await _dlsContext.Citizens
-                    .Include(x => x.CitizenIdentityDocuments)
+                            .AsNoTracking()
+                            .Include(x => x.CitizenAddresses)
+                            .Include(x => x.CitizenIdentityDocuments)
                             .Where(c =>
                                 c.FirstNameSecondLang == variantEn &&
-                                c.DateOfBirth.Date == Convert.ToDateTime(normalized.DateOfBirth).Date &&
-                                !c.IsDeleted.Value)
+                                c.DateOfBirth.HasValue &&
+                                normalized.DateOfBirth != null &&
+                                ParseNormalizedDate(normalized.DateOfBirth).HasValue &&
+                                c.DateOfBirth.Value.Date == ParseNormalizedDate(normalized.DateOfBirth).Value.Date &&
+                                (c.IsDeleted == null || c.IsDeleted == false))
                             .ToListAsync(ct);
                         foreach (var c in byVariantEn) candidates.Add(c);
                     }
@@ -631,6 +819,8 @@ public class CitizenService : ICitizenService
             if (!string.IsNullOrEmpty(normalized.Mobile))
             {
                 var byMobile = await _dlsContext.Citizens
+                    .AsNoTracking()
+                    .Include(x => x.CitizenAddresses)
                     .Include(x => x.CitizenIdentityDocuments)
                     .Where(c => c.Phone == normalized.Mobile && c.IsDeleted != true)
                     .ToListAsync(ct);
@@ -638,7 +828,7 @@ public class CitizenService : ICitizenService
             }
 
             // 3. Deduplicate by ID
-            var uniqueCandidates = candidates.GroupBy(c => c.Id).Select(g => g.First()).ToList();
+            var uniqueCandidates = candidates.DistinctBy(c => c.Id).ToList();
 
             // 4. Score each candidate
             var scoredCandidates = new List<(CitizenABP candidate, double score, List<string> reasons, Dictionary<string, object> fields)>();
@@ -667,8 +857,7 @@ public class CitizenService : ICitizenService
 
             return new CitizenSearchResponse
             {
-                //  QueryId = queryId,
-
+                QueryId = queryId,
                 Candidates = ranked,
                 Audit = new SearchAuditInfo
                 {
@@ -680,18 +869,52 @@ public class CitizenService : ICitizenService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error searching for citizens. QueryId: ");
-            throw;
+            var exception = new Exception("Error searching for citizens");
+            exception.HelpLink = "citizen_search_error";
+            throw exception;
         }
     }
-    public async Task<(IEnumerable<Citizen> items, PaginationMetaData metaData)> SearchMobileCitizen(Pagination pagination, CancellationToken ct = default)
+    public async Task<(IEnumerable<CitizenListItemDto> items, PaginationMetaData metaData)> SearchMobileCitizen(Pagination pagination, int? status = null, CancellationToken ct = default)
     {
-        var query = _context.Citizens.Where(x => x.IsValid == false && x.ApprovalStatusId == (int)CitizenStatus.PendingValidation && (x.IsDeleted == false || x.IsDeleted == null));
-        var items = await query.Skip((pagination.PageNumber - 1) * pagination.PageSize)
-                               .Take(pagination.PageSize)
-                               .ToListAsync(ct);
+        // Normalize status input 
 
-        var metaData = PageList<Citizen>.ToPageList(items, query.Count(), pagination.PageNumber, pagination.PageSize).MetaData;
+        // Build base query
+        var query = _context.Citizens
+            .AsNoTracking()
+            .Where(x => x.IsValid == false && (x.ApprovalStatusId == (int)CitizenStatus.PendingValidation || status == null) && (x.IsDeleted == false || x.IsDeleted == null));
+
+
+
+        var totalCount = await query.CountAsync(ct);
+
+        // Project to DTO with status names using join
+        var items = await query
+            .Join(_context.Statuses,
+                citizen => citizen.ApprovalStatusId,
+                status => status.ID,
+                (citizen, status) => new CitizenListItemDto
+                {
+                    Id = citizen.Id,
+                    UserId = citizen.UserId,
+                    FirstName = citizen.FirstName,
+                    LastName = citizen.LastName,
+                    MiddleName = citizen.MiddleName,
+                    DateOfBirth = citizen.DateOfBirth,
+                    NationalId = citizen.NationalId,
+                    Phone = citizen.Phone,
+                    Email = citizen.Email,
+                    ApprovalStatusId = citizen.ApprovalStatusId,
+                    ApprovalStatusEn = status.StatusDesc,
+                    ApprovalStatusAr = status.StatusDescAr,
+                    ApprovalStatusFr = status.StatusDescFr,
+                    CreatedDate = citizen.CreatedDate,
+                    ModifiedDate = citizen.ModifiedDate
+                })
+            .Skip((pagination.PageNumber - 1) * pagination.PageSize)
+            .Take(pagination.PageSize)
+            .ToListAsync(ct);
+
+        var metaData = PageList<CitizenListItemDto>.ToPageList(items, totalCount, pagination.PageNumber, pagination.PageSize).MetaData;
         return (items, metaData);
     }
 
@@ -706,6 +929,31 @@ public class CitizenService : ICitizenService
     }
 
 
+    /// <summary>
+    /// Safely parses a normalized date string (YYYY-MM-DD) to DateTime
+    /// </summary>
+    private static DateTime? ParseNormalizedDate(string? dateStr)
+    {
+        if (string.IsNullOrWhiteSpace(dateStr))
+            return null;
+
+        // Try parsing YYYY-MM-DD format first
+        if (DateTime.TryParseExact(dateStr, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var parsedDate))
+        {
+            return parsedDate;
+        }
+
+        // Fallback to general parsing
+        if (DateTime.TryParse(dateStr, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out parsedDate))
+        {
+            return parsedDate;
+        }
+
+        return null;
+    }
+
     private NormalizedQuery NormalizeQuery(CitizenSearchRequest request)
     {
         return new NormalizedQuery
@@ -719,7 +967,7 @@ public class CitizenService : ICitizenService
             MotherNameAr = NameNormalizer.NormalizeArabicName(request.MotherNameAr),
             FirstNameEn = NameNormalizer.NormalizeLatinName(request.FirstNameEn),
             LastNameEn = NameNormalizer.NormalizeLatinName(request.LastNameEn),
-            DateOfBirth = NameNormalizer.NormalizeDOBo(request.DateOfBirth),
+            DateOfBirth = NameNormalizer.NormalizeDateOfBirth(request.DateOfBirth),
             Mobile = NameNormalizer.NormalizePhone(request.Mobile)
         };
     }
@@ -737,6 +985,13 @@ public class CitizenService : ICitizenService
         double score = 0.0;
         var reasons = new List<string>();
         var fields = new Dictionary<string, object>();
+
+        // Normalize candidate names for fair comparison with normalized query
+        var candidateFirstNameAr = NameNormalizer.NormalizeArabicName(candidate.FirstName);
+        var candidateFatherNameAr = NameNormalizer.NormalizeArabicName(candidate.FathersName);
+        var candidateLastNameAr = NameNormalizer.NormalizeArabicName(candidate.LastName);
+        var candidateFirstNameEn = NameNormalizer.NormalizeLatinName(candidate.FirstNameSecondLang);
+        var candidateLastNameEn = NameNormalizer.NormalizeLatinName(candidate.LastNameSecondLang);
 
         // 4.1 Deterministic keys (short-circuit to high)
         if (!string.IsNullOrEmpty(query.NationalId) &&
@@ -769,54 +1024,45 @@ public class CitizenService : ICitizenService
             !string.IsNullOrEmpty(query.LastNameAr) &&
             !string.IsNullOrEmpty(query.DateOfBirth))
         {
-            var nameArScore = MatchingAlgorithms.TripletScoreAr(
-                candidate.FirstName, candidate.FathersName, candidate.LastName,
+            // Check for exact match first (highest confidence)
+            bool exactMatchAr = candidateFirstNameAr == query.FirstNameAr &&
+                               candidateFatherNameAr == query.FatherNameAr &&
+                               candidateLastNameAr == query.LastNameAr;
+
+            var nameArScore = exactMatchAr ? 1.0 : MatchingAlgorithms.TripletScoreAr(
+                candidateFirstNameAr, candidateFatherNameAr, candidateLastNameAr,
                 query.FirstNameAr, query.FatherNameAr, query.LastNameAr);
 
-            if (nameArScore >= 0.92 && candidate.DateOfBirth.Date == Convert.ToDateTime(candidate.DateOfBirth).Date)
+            var queryDob = ParseNormalizedDate(query.DateOfBirth);
+            if (nameArScore >= 0.92 && candidate.DateOfBirth.HasValue && queryDob.HasValue && candidate.DateOfBirth.Value.Date == queryDob.Value.Date)
             {
-                score = Math.Max(score, 0.90);
+                score = Math.Max(score, exactMatchAr ? 0.95 : 0.90);
                 reasons.Add("NAME_AR_DOB_COMPOSITE");
-                fields["nameAr"] = "matched";
+                fields["nameAr"] = $"{query.FirstNameAr} {query.FatherNameAr} {query.LastNameAr} (normalized)";
                 fields["dob"] = true;
             }
         }
 
-        // 4.2 Composite: Arabic triplet + DoB
-        if (
-        (!string.IsNullOrEmpty(query.FirstNameAr) &&
-        !string.IsNullOrEmpty(query.FatherNameAr) &&
-        !string.IsNullOrEmpty(query.LastNameAr)) ||
-        (!string.IsNullOrEmpty(query.FirstNameEn) &&
-        !string.IsNullOrEmpty(query.LastNameEn))
-        )
-        {
-            var nameArScore = MatchingAlgorithms.TripletScoreAr(
-                candidate.FirstName, candidate.FathersName, candidate.LastName,
-                query.FirstNameAr, query.FatherNameAr, query.LastNameAr);
-
-            if (nameArScore >= 0.92 && candidate.DateOfBirth.Date == Convert.ToDateTime(candidate.DateOfBirth).Date)
-            {
-                score = Math.Max(score, 0.90);
-                reasons.Add("NAME_AR_DOB_COMPOSITE");
-                fields["nameAr"] = "matched";
-            }
-        }
 
         // 4.3 Composite: Latin pair + DoB
         if (!string.IsNullOrEmpty(query.FirstNameEn) &&
             !string.IsNullOrEmpty(query.LastNameEn) &&
             !string.IsNullOrEmpty(query.DateOfBirth))
         {
-            var nameEnScore = MatchingAlgorithms.PairScoreEn(
-                candidate.FirstNameSecondLang, candidate.LastNameSecondLang,
+            // Check for exact match first (highest confidence)
+            bool exactMatchEn = candidateFirstNameEn == query.FirstNameEn &&
+                               candidateLastNameEn == query.LastNameEn;
+
+            var nameEnScore = exactMatchEn ? 1.0 : MatchingAlgorithms.PairScoreEn(
+                candidateFirstNameEn, candidateLastNameEn,
                 query.FirstNameEn, query.LastNameEn);
 
-            if (nameEnScore >= 0.90 && candidate.DateOfBirth.Date == Convert.ToDateTime(candidate.DateOfBirth).Date)
+            var queryDobEn = ParseNormalizedDate(query.DateOfBirth);
+            if (nameEnScore >= 0.90 && candidate.DateOfBirth.HasValue && queryDobEn.HasValue && candidate.DateOfBirth.Value.Date == queryDobEn.Value.Date)
             {
-                score = Math.Max(score, 0.75);
+                score = Math.Max(score, exactMatchEn ? 0.80 : 0.75);
                 reasons.Add("NAME_EN_DOB_COMPOSITE");
-                fields["nameEn"] = "matched";
+                fields["nameEn"] = $"{query.FirstNameEn} {query.LastNameEn} (normalized)";
                 fields["dob"] = true;
             }
         }
@@ -826,24 +1072,36 @@ public class CitizenService : ICitizenService
         {
             foreach (var variantAr in hypocorismSet.NameVariantsAr)
             {
-                if (candidate.FirstName == variantAr &&
-                    candidate.DateOfBirth.Date == Convert.ToDateTime(candidate.DateOfBirth).Date)
+                var queryDobVarAr = ParseNormalizedDate(query.DateOfBirth);
+                // Compare normalized candidate name with normalized variant
+                var normalizedVariantAr = NameNormalizer.NormalizeArabicName(variantAr);
+                if (candidateFirstNameAr == normalizedVariantAr &&
+                    candidate.DateOfBirth.HasValue &&
+                    queryDobVarAr.HasValue &&
+                    candidate.DateOfBirth.Value.Date == queryDobVarAr.Value.Date)
                 {
                     score = Math.Max(score, 0.90);
                     reasons.Add("HYPOCORISM_VARIANT");
-                    fields["nameAr"] = "hypocorism variant";
+                    fields["nameAr"] = $"{query.FirstNameAr} ~ {variantAr} (hypocorism variant)";
+                    fields["dob"] = true;
                     break;
                 }
             }
 
             foreach (var variantEn in hypocorismSet.NameVariantsEn)
             {
-                if (candidate.FirstNameSecondLang == variantEn &&
-                    candidate.DateOfBirth.Date == Convert.ToDateTime(candidate.DateOfBirth).Date)
+                var queryDobVarEn = ParseNormalizedDate(query.DateOfBirth);
+                // Compare normalized candidate name with normalized variant
+                var normalizedVariantEn = NameNormalizer.NormalizeLatinName(variantEn);
+                if (candidateFirstNameEn == normalizedVariantEn &&
+                    candidate.DateOfBirth.HasValue &&
+                    queryDobVarEn.HasValue &&
+                    candidate.DateOfBirth.Value.Date == queryDobVarEn.Value.Date)
                 {
                     score = Math.Max(score, 0.90);
                     reasons.Add("HYPOCORISM_VARIANT");
-                    fields["nameEn"] = "hypocorism variant";
+                    fields["nameEn"] = $"{query.FirstNameEn} ~ {variantEn} (hypocorism variant)";
+                    fields["dob"] = true;
                     break;
                 }
             }
@@ -853,19 +1111,51 @@ public class CitizenService : ICitizenService
         if (score < 0.90) // Only if no hard match
         {
             var fuzzyAr = MatchingAlgorithms.TripletScoreAr(
-                candidate.FirstName, candidate.FathersName, candidate.LastName,
+                candidateFirstNameAr, candidateFatherNameAr, candidateLastNameAr,
                 query.FirstNameAr, query.FatherNameAr, query.LastNameAr);
 
             var fuzzyEn = MatchingAlgorithms.PairScoreEn(
-                candidate.FirstNameSecondLang, candidate.LastNameSecondLang,
+                candidateFirstNameEn, candidateLastNameEn,
                 query.FirstNameEn, query.LastNameEn);
 
             // Weight Arabic higher (0.7) than Latin (0.3)
-            var weightedFuzzy = (fuzzyAr * 0.7) + (fuzzyEn * 0.3);
+            // Use the higher of the two scores if one is missing
+            double weightedFuzzy;
+            if (fuzzyAr > 0 && fuzzyEn > 0)
+            {
+                weightedFuzzy = (fuzzyAr * 0.7) + (fuzzyEn * 0.3);
+            }
+            else if (fuzzyAr > 0)
+            {
+                weightedFuzzy = fuzzyAr;
+            }
+            else if (fuzzyEn > 0)
+            {
+                weightedFuzzy = fuzzyEn;
+            }
+            else
+            {
+                weightedFuzzy = 0;
+            }
+
             if (weightedFuzzy >= 0.85)
             {
                 score = Math.Max(score, Math.Min(weightedFuzzy, 0.89));
                 reasons.Add("FUZZY_NAME");
+                if (fuzzyAr >= 0.85)
+                    fields["nameAr"] = "close";
+                if (fuzzyEn >= 0.85)
+                    fields["nameEn"] = "close";
+            }
+            else if (weightedFuzzy > 0 && score == 0)
+            {
+                // Give partial credit for any fuzzy match, even if below threshold
+                score = Math.Max(score, Math.Min(weightedFuzzy * 0.8, 0.74)); // Cap at 0.74 for low confidence
+                reasons.Add("FUZZY_NAME");
+                if (fuzzyAr > 0.5)
+                    fields["nameAr"] = "partial";
+                if (fuzzyEn > 0.5)
+                    fields["nameEn"] = "partial";
             }
         }
 
@@ -882,11 +1172,26 @@ public class CitizenService : ICitizenService
     }
     public async Task<bool> RejectCitizen(int id, string reason, CancellationToken ct = default)
     {
+        // Input validation
+        if (id <= 0)
+        {
+            var ex = new Exception("Citizen ID must be greater than 0");
+            ex.HelpLink = "invalid_citizen_id";
+            throw ex;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            var ex = new Exception("Rejection reason is required");
+            ex.HelpLink = "rejection_reason_required";
+            throw ex;
+        }
+
         try
         {
             var citizenToUpdate = await _context.Citizens
                 .FirstOrDefaultAsync(
-                    a => (a.Id == id) && a.IsDeleted != true,
+                    a => (a.Id == id) && (a.IsDeleted == null || a.IsDeleted == false),
                     ct);
 
             if (citizenToUpdate == null)
@@ -900,13 +1205,25 @@ public class CitizenService : ICitizenService
             citizenToUpdate.ModifiedDate = DateTime.UtcNow;
 
             ///to do add notification 
+            //await _context.SaveChangesAsync(ct);
+            Notification notification = new Notification
+            {
+                UserId = citizenToUpdate.UserId,
+                Title = "Citizen Application Rejected",
+                Message = $"Your citizen application has been rejected. Reason: {reason}",
+                IsRead = false,
+                CreatedDate = DateTime.UtcNow
+            };
+            _context.Notifications.Add(notification);
             await _context.SaveChangesAsync(ct);
+            //_notificationService.AddAsync(notification);
             return true;
         }
         catch (Exception ex)
         {
-
-            throw;
+            var exception = new Exception($"Error rejecting citizen {id}");
+            exception.HelpLink = "citizen_reject_error";
+            throw exception;
         }
     }
 
@@ -966,6 +1283,22 @@ public class CitizenService : ICitizenService
             }
         }
     }
+
+    /// <summary>
+    /// Creates a notification for a user and saves it to the mobile database
+    /// </summary>
+    private async Task CreateNotificationAsync(long userId, string title, string message, CancellationToken ct = default)
+    {
+        var notification = new Notification
+        {
+            UserId = userId,
+            Title = title,
+            Message = message,
+            IsRead = false,
+            CreatedDate = DateTime.UtcNow
+        };
+        await _notificationService.AddAsync(notification, ct);
+    }
     private async Task<DrivingLicenseSnapshot?> UpdateStatusAndAddLinkNew(CitizenCreateLocalRequest request, int userId, Citizen onlineCitizen, int localCitizenId, CancellationToken ct)
     {
 
@@ -990,6 +1323,12 @@ public class CitizenService : ICitizenService
         onlineCitizen.ValidationDate = DateTime.UtcNow;
         onlineCitizen.ValidationUserId = userId;
 
+        // 9.1. Create notification for status update (Approved)
+        await CreateNotificationAsync(
+            onlineCitizen.UserId,
+            "Citizen Application Approved",
+            "Your citizen application has been created in DLS and approved successfully.",
+            ct);
 
         // 10. Get DL snapshot if exists
         var dlSnapshot = await GetDrivingLicenseSnapshotAsync(localCitizenId, ct);

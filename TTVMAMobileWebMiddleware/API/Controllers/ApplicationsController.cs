@@ -89,8 +89,9 @@ public class ApplicationsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error reviewing application {ApplicationId}", applicationId);
-            return StatusCode(500, new { error = "An error occurred while processing the application review" });
+            var exception = new Exception($"Error reviewing application {applicationId}");
+            exception.HelpLink = "application_review_error";
+            throw exception;
         }
     }
 
@@ -122,7 +123,7 @@ public class ApplicationsController : ControllerBase
 
 
     [HttpGet("GetApplications")]
-    public async Task<IActionResult> GetApplications([FromQuery] Pagination pagination, [FromQuery] string? keyword = null, [FromQuery] string? status = null, [FromQuery] string? filtration = "all", [FromQuery] int? userId = null, [FromQuery] int? branchId = null, CancellationToken ct = default)
+    public async Task<IActionResult> GetApplications([FromQuery] Pagination pagination, [FromQuery] string? keyword = null, [FromQuery] int? status = null, [FromQuery] string? filtration = "all", [FromQuery] int? userId = null, [FromQuery] int? branchId = null, CancellationToken ct = default)
     {
         // Validate filtration parameter
         if (!string.IsNullOrWhiteSpace(filtration) &&

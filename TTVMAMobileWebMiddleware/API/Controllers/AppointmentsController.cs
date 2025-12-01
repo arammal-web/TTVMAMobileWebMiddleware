@@ -54,8 +54,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error searching appointment availability");
-            return StatusCode(500, new { error = "An error occurred while searching availability" });
+            var exception = new Exception("Error searching appointment availability");
+            exception.HelpLink = "appointment_search_availability_error";
+            throw exception;
         }
     }
 
@@ -86,8 +87,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error holding appointment slot");
-            return StatusCode(500, new { error = "An error occurred while holding the slot" });
+            var exception = new Exception("Error holding appointment slot");
+            exception.HelpLink = "appointment_hold_error";
+            throw exception;
         }
     }
 
@@ -114,8 +116,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error booking appointment");
-            return StatusCode(500, new { error = "An error occurred while booking the appointment" });
+            var exception = new Exception("Error booking appointment");
+            exception.HelpLink = "appointment_booking_error";
+            throw exception;
         }
     }
 
@@ -144,8 +147,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error confirming appointment {AppointmentId}", id);
-            return StatusCode(500, new { error = "An error occurred while confirming the appointment" });
+            var exception = new Exception($"Error confirming appointment {id}");
+            exception.HelpLink = "appointment_confirm_error";
+            throw exception;
         }
     }
 
@@ -182,8 +186,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error proposing alternatives for appointment {AppointmentId}", id);
-            return StatusCode(500, new { error = "An error occurred while proposing alternatives" });
+            var exception = new Exception($"Error proposing alternatives for appointment {id}");
+            exception.HelpLink = "appointment_propose_error";
+            throw exception;
         }
     }
 
@@ -205,8 +210,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error retrieving appointment {AppointmentId}", id);
-            return StatusCode(500, new { error = "An error occurred while retrieving the appointment" });
+            var exception = new Exception($"Error retrieving appointment {id}");
+            exception.HelpLink = "appointment_retrieve_error";
+            throw exception;
         }
     }
 
@@ -218,12 +224,12 @@ public class AppointmentsController : ControllerBase
     /// <returns>Appointment details</returns>
     [HttpGet]
     public async Task<IActionResult> GetAppointments(
-        
+        [FromQuery] int? status = null,
         CancellationToken ct = default)
     {
         try
         {
-            var result = await _appointmentService.GetAppointments( ct);
+            var result = await _appointmentService.GetAppointments(status, ct);
             return result == null ? NotFound() : Ok(result);
         }
         catch (Exception ex)
@@ -251,8 +257,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error retrieving appointments for application {ApplicationId}", applicationId);
-            return StatusCode(500, new { error = "An error occurred while retrieving appointments" });
+            var exception = new Exception($"Error retrieving appointments for application {applicationId}");
+            exception.HelpLink = "appointment_retrieve_by_application_error";
+            throw exception;
         }
     }
 
@@ -282,8 +289,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error completing appointment {AppointmentId}", id);
-            return StatusCode(500, new { error = "An error occurred while completing the appointment" });
+            var exception = new Exception($"Error completing appointment {id}");
+            exception.HelpLink = "appointment_complete_error";
+            throw exception;
         }
     }
 
@@ -315,8 +323,9 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error cancelling appointment {AppointmentId}", id);
-            return StatusCode(500, new { error = "An error occurred while cancelling the appointment" });
+            var exception = new Exception($"Error cancelling appointment {id}");
+            exception.HelpLink = "appointment_cancel_error";
+            throw exception;
         }
     }
 

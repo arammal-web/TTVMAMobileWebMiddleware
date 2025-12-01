@@ -6,6 +6,7 @@
         public int DocumentId { get; set; }
         public string? DocFilePath { get; set; }
         public string? DocFileExt { get; set; }
+        public byte[]? DocFileData { get; set; }
 
         // Document multilingual
         public string? DocumentNameEn { get; set; }

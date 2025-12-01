@@ -32,28 +32,58 @@ namespace TTVMAMobileWebMiddleware.Application.Services
         /// </summary>
         public async Task<Notification> AddAsync(Notification notification, CancellationToken ct = default)
         {
-            if (notification == null)
+            try
             {
-                var ex = new ArgumentNullException(nameof(notification));
-                ex.HelpLink = "notification_required";
-                throw ex;
-            }
-            notification.CreatedDate = notification.CreatedDate == default
-                ? DateTime.UtcNow
-                : notification.CreatedDate;
+                if (notification == null)
+                {
+                    var ex = new Exception("Notification is required");
+                    ex.HelpLink = "notification_required";
+                    throw ex;
+                }
 
-            if (notification.IsRead && notification.ReadDate == null)
+                if (notification.UserId <= 0)
+                {
+                    var ex = new Exception("Notification UserId must be greater than 0");
+                    ex.HelpLink = "notification_user_id_invalid";
+                    throw ex;
+                }
+
+                if (string.IsNullOrWhiteSpace(notification.Title))
+                {
+                    var ex = new Exception("Notification Title is required");
+                    ex.HelpLink = "notification_title_required";
+                    throw ex;
+                }
+
+                if (string.IsNullOrWhiteSpace(notification.Message))
+                {
+                    var ex = new Exception("Notification Message is required");
+                    ex.HelpLink = "notification_message_required";
+                    throw ex;
+                }
+
+                notification.CreatedDate = notification.CreatedDate == default
+                    ? DateTime.UtcNow
+                    : notification.CreatedDate;
+
+                if (notification.IsRead && notification.ReadDate == null)
+                {
+                    notification.ReadDate = DateTime.UtcNow;
+                }
+
+                _context.Notifications.Add(notification);
+                await _context.SaveChangesAsync(ct);
+
+                // Invalidate cache for the affected user
+                _cache.Remove($"NotificationCount_User_{notification.UserId}");
+                _cache.Remove($"UnreadNotificationCount_User_{notification.UserId}");
+            }
+            catch (Exception ex)
             {
-                notification.ReadDate = DateTime.UtcNow;
+                var exception = new Exception($"Error adding notification for user {notification?.UserId}");
+                exception.HelpLink = "notification_add_error";
+                throw exception;
             }
-
-            _context.Notifications.Add(notification);
-            await _context.SaveChangesAsync(ct);
-
-            // Invalidate cache for the affected user
-            _cache.Remove($"NotificationCount_User_{notification.UserId}");
-            _cache.Remove($"UnreadNotificationCount_User_{notification.UserId}");
-
             return notification;
         }
 
