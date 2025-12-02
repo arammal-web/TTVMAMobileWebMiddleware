@@ -10,6 +10,7 @@ using TTVMAMobileWebMiddleware.Domain.Entities.DLS;
 using TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
 using TTVMAMobileWebMiddleware.Domain.Enums;
 using TTVMAMobileWebMiddleware.Domain.Views;
+using ApplicationStatus = TTVMAMobileWebMiddleware.Domain.Enums.ApplicationStatus;
 
 namespace TTVMAMobileWebMiddleware.Application.Services
 {
@@ -186,6 +187,8 @@ namespace TTVMAMobileWebMiddleware.Application.Services
             }
         }
 
+
+
         private async Task<List<ReceiptResponseDto>> CreateMobileReceiptsWithDetails(ReceiptWithDetailRequest entity, List<ReceiptResponseDto> receiptResponseDto, List<IGrouping<int?, ReceiptDetail>> groupedDetails, int currentYear, Dictionary<int, Domain.Entities.Mobile.FeeCategory> feeCategories, string sequenceFormatted, string CitizenFullName, int? DrivingLicenseId, List<ReceiptMOB> receiptsToCreate, List<ReceiptDetailMOB> detailsToCreate, CancellationToken ct)
         {
             foreach (var group in groupedDetails)
@@ -215,9 +218,8 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                     ReceiptStatusId = (int)ReceiptStatuses.PendingPayment,
                     StructureId = entity.Receipt.StructureId,
                     TotalAmount = group.Sum(x => x.Amount), // Calculate total from details
-                    IsPaid = true,
-                    PaidDate = DateTime.UtcNow,
-                    IsPosted = false,
+                    IsPaid = false,
+                     IsPosted = false,
                     IsDeleted = false,
                     CitizenFullName = CitizenFullName,
                     Notes = entity.Receipt.Notes,
@@ -283,6 +285,7 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                 throw;
             }
         }
+
         private async Task<List<ReceiptResponseDto>> CreateDLSReceiptWithDetails(ReceiptWithDetailRequest entity, List<ReceiptResponseDto> receiptResponseDto, List<IGrouping<int?, ReceiptDetail>> groupedDetails, int currentYear, Dictionary<int, Domain.Entities.DLS.FeeCategory> feeCategories, string sequenceFormatted, string CitizenFullName, int? DrivingLicenseId, List<Receipt> receiptsToCreate, List<ReceiptDetail> detailsToCreate, CancellationToken ct)
         {
             foreach (var group in groupedDetails)
@@ -312,9 +315,8 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                     ReceiptStatusId = (int)ReceiptStatuses.PendingPayment,
                     StructureId = entity.Receipt.StructureId,
                     TotalAmount = group.Sum(x => x.Amount), // Calculate total from details
-                    IsPaid = true,
-                    PaidDate = DateTime.UtcNow,
-                    IsPosted = false,
+                    IsPaid = false,
+                     IsPosted = false,
                     IsDeleted = false,
                     CitizenFullName = CitizenFullName,
                     Notes = entity.Receipt.Notes,
@@ -389,46 +391,10 @@ namespace TTVMAMobileWebMiddleware.Application.Services
             try
             {
                 _logger.LogInformation("Starting sync of receipts and driving licenses for mobile app citizens");
-
-                // Get all mobile app citizens (those with CitizenLink)
-                var mobileCitizens = await _context.CitizenLinks
-                    .Select(cl => new { cl.CitizenOnlineId, cl.CitizenLocalId })
-                    .ToListAsync(ct);
-
-                var mobileCitizensList = mobileCitizens
-                    .Select(c => (OnlineCitizenId: c.CitizenOnlineId, LocalCitizenId: c.CitizenLocalId))
-                    .ToList();
-
-                result.CitizensProcessed = mobileCitizensList.Count;
-
-                if (!mobileCitizensList.Any())
-                {
-                    _logger.LogInformation("No mobile app citizens found to sync");
-                    return result;
-                }
-
-                var localCitizenIds = mobileCitizensList.Select(c => c.LocalCitizenId).ToList();
-                var onlineCitizenIds = mobileCitizensList.Select(c => c.OnlineCitizenId).ToList();
-
-                // Get all applications for mobile app citizens
-                var mobileApplications = await _context.Applications
-                    .Where(a => onlineCitizenIds.Contains(a.OwnerId) && (a.IsDeleted == null || a.IsDeleted == false))
-                    .Select(a => a.Id)
-                    .ToListAsync(ct);
-
-                result.ApplicationsProcessed = mobileApplications.Count;
-
-                using var transaction = await _context.Database.BeginTransactionAsync(ct);
-                try
+                 try
                 {
                     // Sync Receipts and ReceiptDetails
-                    await SyncReceiptsAsync(mobileApplications, userId, result, ct);
-
-                    // Sync DrivingLicenses and DrivingLicenseDetails
-                    await SyncDrivingLicensesAsync(mobileCitizensList, userId, result, ct);
-
-                    await _context.SaveChangesAsync(ct);
-                    await transaction.CommitAsync(ct);
+                    await SyncReceiptsAsync( userId, result, ct);
 
                     _logger.LogInformation(
                         "Sync completed successfully. Receipts: {Receipts}, ReceiptDetails: {ReceiptDetails}, " +
@@ -438,8 +404,7 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                 }
                 catch (Exception ex)
                 {
-                    await transaction.RollbackAsync(ct);
-                    result.Errors.Add($"Transaction rolled back: {ex.Message}");
+                     result.Errors.Add($"Transaction rolled back: {ex.Message}");
                     _logger.LogError(ex, "Error during sync transaction");
                     throw;
                 }
@@ -453,145 +418,93 @@ namespace TTVMAMobileWebMiddleware.Application.Services
             return result;
         }
 
-        private async Task SyncReceiptsAsync(List<string> applicationIds, int userId, SyncResult result, CancellationToken ct)
-        {
-            if (!applicationIds.Any())
-                return;
-
-
-            // Get all receipts from DLS for these applications
-            var dlsReceipts = await _dLSDbContext.Receipts
-                .Include(r => r.ReceiptDetails)
-                .Where(r => applicationIds.Contains(r.ApplicationId) &&
+        private async Task SyncReceiptsAsync( int userId, SyncResult result, CancellationToken ct)
+        { 
+            // Get unpaid receipts from mobile database for these applications
+            var unpaidMobileReceipts = await _context.Receipts
+                .Where(r =>  r.IsPaid == false &&
                            (r.IsDeleted == null || r.IsDeleted == false))
                 .ToListAsync(ct);
 
-            foreach (var dlsReceipt in dlsReceipts)
+            // Check if these receipts are paid in DLS database
+            if (unpaidMobileReceipts.Any())
             {
-                try
+                var receiptNumberIntegrations = unpaidMobileReceipts
+                    .Select(r => r.ReceiptNumberIntegration)
+                    .Distinct()
+                    .ToList();
+
+                var paidDlsReceipts = await _dLSDbContext.Receipts
+                    .Where(r => receiptNumberIntegrations.Contains(r.ReceiptNumberIntegration) &&
+                               r.IsPaid == true &&
+                               (r.IsDeleted == null || r.IsDeleted == false))
+                    .ToListAsync(ct);
+
+                // Process each paid DLS receipt
+                var citizensToSyncDrivingLicenses = new HashSet<int>(); // Track online citizen IDs
+
+                foreach (var dlsReceipt in paidDlsReceipts)
                 {
-                    // Check if receipt already exists in mobile database
-                    var existingReceipt = await _context.Receipts
-                        .FirstOrDefaultAsync(r => r.ApplicationId == dlsReceipt.ApplicationId &&
-                                                  r.ReceiptNumberIntegration == dlsReceipt.ReceiptNumberIntegration &&
-                                                  (r.IsDeleted == null || r.IsDeleted == false), ct);
-
-                    ReceiptMOB mobileReceipt;
-                    if (existingReceipt == null)
+                    try
                     {
-                        // Create new receipt
-                        mobileReceipt = new ReceiptMOB
+                        // Find corresponding mobile receipt
+                        var mobileReceipt = unpaidMobileReceipts
+                            .FirstOrDefault(r => r.ReceiptNumberIntegration == dlsReceipt.ReceiptNumberIntegration);
+
+                        if (mobileReceipt == null)
+                            continue;
+
+                        // Call PayReceiptAsync with format: {year}-{ReceiptNumber}
+                        // PayReceiptAsync expects format where first part is year and last part is ReceiptNumber
+ 
+                        var paySuccess = await PayReceiptAsync(dlsReceipt.ReceiptCategorySequenceNumber, userId, ct);
+
+                        if (paySuccess)
                         {
-                            ApplicationId = dlsReceipt.ApplicationId,
-                            ReceiptNumber = dlsReceipt.ReceiptNumber,
-                            ReceiptNumberIntegration = dlsReceipt.ReceiptNumberIntegration,
-                            ReceiptCategorySequenceNumber = dlsReceipt.ReceiptCategorySequenceNumber,
-                            Description = dlsReceipt.Description,
-                            ReceiptStatusId = dlsReceipt.ReceiptStatusId,
-                            ReceiptStatusDate = dlsReceipt.ReceiptStatusDate,
-                            StructureId = dlsReceipt.StructureId,
-                            TotalAmount = dlsReceipt.TotalAmount,
-                            IsPaid = dlsReceipt.IsPaid,
-                            PaidDate = dlsReceipt.PaidDate,
-                            PaymentProviderNumber = dlsReceipt.PaymentProviderNumber,
-                            PaymentProviderDate = dlsReceipt.PaymentProviderDate,
-                            PaymentProviderData = dlsReceipt.PaymentProviderData,
-                            DataHash = dlsReceipt.DataHash,
-                            IsPosted = dlsReceipt.IsPosted,
-                            PostedDate = dlsReceipt.PostedDate,
-                            PostedUserId = dlsReceipt.PostedUserId,
-                            CitizenFullName = dlsReceipt.CitizenFullName,
-                            Notes = dlsReceipt.Notes,
-                            IsDeleted = false,
-                            CreatedDate = dlsReceipt.CreatedDate,
-                            CreatedUserId = dlsReceipt.CreatedUserId ?? userId,
-                            ModifiedDate = dlsReceipt.ModifiedDate,
-                            ModifiedUserId = dlsReceipt.ModifiedUserId,
-                            DrivingLicenseId = dlsReceipt.DrivingLicenseId
-                        };
+                            // Get application to find citizen ID
+                            var application = await _context.Applications
+                                .Where(a => a.Id == mobileReceipt.ApplicationId &&
+                                           (a.IsDeleted == null || a.IsDeleted == false))
+                                .Select(a => new { a.OwnerId })
+                                .FirstOrDefaultAsync(ct);
 
-                        _context.Receipts.Add(mobileReceipt);
-                        await _context.SaveChangesAsync(ct); // Save to get the ID
-                        result.ReceiptsSynced++;
+                            if (application != null && application.OwnerId != 0)
+                            {
+                                citizensToSyncDrivingLicenses.Add(application.OwnerId);
+                            }
+
+                            _logger.LogInformation(
+                                "Successfully paid receipt {ReceiptNumberIntegration} for application {ApplicationId}",
+                                mobileReceipt.ReceiptNumberIntegration, mobileReceipt.ApplicationId);
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        // Update existing receipt
-                        mobileReceipt = existingReceipt;
-                        existingReceipt.ReceiptStatusId = dlsReceipt.ReceiptStatusId;
-                        existingReceipt.ReceiptStatusDate = dlsReceipt.ReceiptStatusDate;
-                        existingReceipt.TotalAmount = dlsReceipt.TotalAmount;
-                        existingReceipt.IsPaid = dlsReceipt.IsPaid;
-                        existingReceipt.PaidDate = dlsReceipt.PaidDate;
-                        existingReceipt.PaymentProviderNumber = dlsReceipt.PaymentProviderNumber;
-                        existingReceipt.PaymentProviderDate = dlsReceipt.PaymentProviderDate;
-                        existingReceipt.PaymentProviderData = dlsReceipt.PaymentProviderData;
-                        existingReceipt.DataHash = dlsReceipt.DataHash;
-                        existingReceipt.IsPosted = dlsReceipt.IsPosted;
-                        existingReceipt.PostedDate = dlsReceipt.PostedDate;
-                        existingReceipt.PostedUserId = dlsReceipt.PostedUserId;
-                        existingReceipt.ModifiedDate = DateTime.UtcNow;
-                        existingReceipt.ModifiedUserId = userId;
+                        result.Errors.Add($"Error paying receipt {dlsReceipt.ReceiptNumberIntegration}: {ex.Message}");
+                        _logger.LogError(ex, "Error paying receipt {ReceiptNumberIntegration}", dlsReceipt.ReceiptNumberIntegration);
                     }
+                }
 
-                    // Sync ReceiptDetails
-                    var dlsDetails = dlsReceipt.ReceiptDetails
-                        .Where(d => d.IsDeleted == false)
+                // Sync driving licenses for citizens whose receipts were successfully paid
+                if (citizensToSyncDrivingLicenses.Any())
+                {
+                    // Get citizen mappings for these online citizens
+                    var citizenMappings = await _context.CitizenLinks
+                        .Where(cl => citizensToSyncDrivingLicenses.Contains(cl.CitizenOnlineId))
+                        .Select(cl => new { cl.CitizenOnlineId, cl.CitizenLocalId })
+                        .ToListAsync(ct);
+
+                    var mobileCitizensForSync = citizenMappings
+                        .Select(c => (OnlineCitizenId: c.CitizenOnlineId, LocalCitizenId: c.CitizenLocalId))
                         .ToList();
 
-                    foreach (var dlsDetail in dlsDetails)
+                    if (mobileCitizensForSync.Any())
                     {
-                        var existingDetail = await _context.ReceiptDetails
-                            .FirstOrDefaultAsync(d => d.ReceiptId == mobileReceipt.Id &&
-                                                      d.ItemId == dlsDetail.ItemId &&
-                                                      d.ProcessId == dlsDetail.ProcessId &&
-                                                      d.BPVarietyId == dlsDetail.BPVarietyId &&
-                                                      d.IsDeleted == false, ct);
-
-                        if (existingDetail == null)
-                        {
-                            var mobileDetail = new ReceiptDetailMOB
-                            {
-                                ReceiptId = mobileReceipt.Id,
-                                ItemId = dlsDetail.ItemId,
-                                ProcessId = dlsDetail.ProcessId,
-                                BPVarietyId = dlsDetail.BPVarietyId,
-                                ItemDescriptionAR = dlsDetail.ItemDescriptionAR,
-                                ItemDescriptionEN = dlsDetail.ItemDescriptionEN,
-                                ItemCode = dlsDetail.ItemCode,
-                                ItemTypeId = dlsDetail.ItemTypeId,
-                                ItemCategoryId = dlsDetail.ItemCategoryId,
-                                Amount = dlsDetail.Amount,
-                                Notes = dlsDetail.Notes,
-                                IsDeleted = false,
-                                CreatedDate = dlsDetail.CreatedDate,
-                                CreatedUserId = dlsDetail.CreatedUserId,
-                                ModifiedDate = dlsDetail.ModifiedDate,
-                                ModifiedUserId = dlsDetail.ModifiedUserId
-                            };
-
-                            _context.ReceiptDetails.Add(mobileDetail);
-                            result.ReceiptDetailsSynced++;
-                        }
-                        else
-                        {
-                            // Update existing detail
-                            existingDetail.Amount = dlsDetail.Amount;
-                            existingDetail.ItemDescriptionAR = dlsDetail.ItemDescriptionAR;
-                            existingDetail.ItemDescriptionEN = dlsDetail.ItemDescriptionEN;
-                            existingDetail.ItemCode = dlsDetail.ItemCode;
-                            existingDetail.Notes = dlsDetail.Notes;
-                            existingDetail.ModifiedDate = DateTime.UtcNow;
-                            existingDetail.ModifiedUserId = userId;
-                        }
+                        await SyncDrivingLicensesAsync(mobileCitizensForSync, userId, result, ct);
                     }
                 }
-                catch (Exception ex)
-                {
-                    result.Errors.Add($"Error syncing receipt {dlsReceipt.Id}: {ex.Message}");
-                    _logger.LogError(ex, "Error syncing receipt {ReceiptId}", dlsReceipt.Id);
-                }
             }
+
         }
 
         private async Task SyncDrivingLicensesAsync(List<(int OnlineCitizenId, int LocalCitizenId)> mobileCitizens, int userId, SyncResult result, CancellationToken ct)
@@ -754,6 +667,7 @@ namespace TTVMAMobileWebMiddleware.Application.Services
 
         private async Task<int> GetNextSequenceAsync(string tableName, int? structureId = null, int? year = null, CancellationToken ct = default)
         {
+
             using var transaction = await _dLSDbContext.Database.BeginTransactionAsync();
             try
             {
@@ -807,6 +721,75 @@ namespace TTVMAMobileWebMiddleware.Application.Services
                 throw;
             }
         }
+
+        private async Task<bool> PayReceiptAsync(string ReceiptNumber, int userId, CancellationToken ct = default)
+        {
+            List<ReceiptMOB> receipts = new List<ReceiptMOB>();
+
+            string[] receiptNumberSplit = ReceiptNumber.Split('-');
+            if (receiptNumberSplit.Count() > 1)
+            {
+                receipts = await _context.Receipts
+                 .Where(r => r.ReceiptNumber == receiptNumberSplit.Last() && r.CreatedDate.Year.ToString() == receiptNumberSplit.First() && (r.IsDeleted == null || r.IsDeleted == false))
+                 .ToListAsync(ct);
+            }
+            if (!receipts.Any())
+                throw new Exception("receipt not found.") { HelpLink = "receipt_not_found" };
+
+            // Validate all receipts have the same ApplicationId
+            var applicationIds = receipts.Select(r => r.ApplicationId).Distinct().ToList();
+            if (applicationIds.Count > 1)
+                throw new Exception("receipts have different application IDs.") { HelpLink = "receipts_different_application_ids" };
+
+
+            // Use the first receipt for application validation (they should all have the same ApplicationId)
+            var receipt = receipts.First();
+
+            var app = await _context.Applications.Where(a => a.Id == receipt.ApplicationId && a.IsDeleted == false)
+                .FirstOrDefaultAsync()
+                ?? throw new Exception("application not found for the receipt.") { HelpLink = "application_not_found_for_receipt" };
+
+            if (app.ApplicationApprovalStatusId != (int)ApplicationStatus.Approved)
+                throw new Exception($"cannot pay: application is not approved (current status: {app.ApplicationApprovalStatus?.StatusDesc ?? $"{app.ApplicationApprovalStatusId}"}).")
+                { HelpLink = "application_status_not_approved" };
+
+
+            using var tx = await _context.Database.BeginTransactionAsync(ct);
+            try
+            {
+                // (1) App → Committed
+                app.ApplicationApprovalStatusId = (int)ApplicationStatus.Committed;
+                app.ApplicationApprovalStatusDate = DateTime.UtcNow;
+                app.ModifiedDate = DateTime.UtcNow;
+                app.ModifiedUserId = userId;
+                // (3) All Receipts with same receipt number → Paid
+                foreach (var receiptToUpdate in receipts)
+                {
+                    receiptToUpdate.IsPaid = true;
+                    receiptToUpdate.PaidDate = DateTime.UtcNow;
+                    receiptToUpdate.PaymentProviderNumber = ReceiptNumber;
+                    receiptToUpdate.PaymentProviderDate = DateTime.UtcNow;
+                    receiptToUpdate.PaymentProviderData = ReceiptNumber;
+                    receiptToUpdate.Notes = "Paid On Mobile";
+                    receiptToUpdate.ModifiedDate = DateTime.UtcNow;
+                    receiptToUpdate.ModifiedUserId = userId;
+                    receiptToUpdate.ReceiptStatusId = (int)ReceiptStatuses.Completed;
+                    receiptToUpdate.ReceiptStatusDate = DateTime.UtcNow;
+
+                }
+                await _context.SaveChangesAsync();
+                await tx.CommitAsync(ct);
+
+
+                return true;
+            }
+            catch
+            {
+                await tx.RollbackAsync(ct);
+                throw;
+            }
+        }
+
 
     }
 }

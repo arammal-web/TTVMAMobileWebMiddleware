@@ -72,6 +72,8 @@ public partial class MOBDbContext : DbContext
 
     public virtual DbSet<CitizenLink> CitizenLinks { get; set; }
 
+    public virtual DbSet<CitizenStatus> CitizenStatuses { get; set; }
+
     public virtual DbSet<DocumentReview> DocumentReviews { get; set; }
 
     public virtual DbSet<City> Cities { get; set; }

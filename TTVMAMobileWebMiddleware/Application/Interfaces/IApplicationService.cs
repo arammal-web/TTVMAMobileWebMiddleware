@@ -22,5 +22,10 @@ public interface IApplicationService
 
     Task<(IEnumerable<ApplicationListItemDto> items, PaginationMetaData metaData)> GetApplicationsAsync(Pagination pagination, string? keyword = null, int? status = null, string? filtration = "all", int? userId = null, int? branchId = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Retrieves all status records
+    /// </summary>
+    Task<IEnumerable<object>> GetStatusesAsync(CancellationToken ct = default);
+
 }
 

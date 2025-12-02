@@ -20,6 +20,7 @@ using TTVMAMobileWebMiddleware.Domain.Entities.DLS;
 using TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
 using TTVMAMobileWebMiddleware.Domain.Enums;
 using TTVMAMobileWebMiddleware.Domain.Views;
+using static Microsoft.EntityFrameworkCore.DbLoggerCategory;
 using static System.Net.Mime.MediaTypeNames;
 using ApplicationStatus = TTVMAMobileWebMiddleware.Domain.Enums.ApplicationStatus;
 
@@ -192,7 +193,8 @@ public class ApplicationService : IApplicationService
     /// <returns></returns>
     public async Task<ApplicationDto?> GetByIdWithDetailAsync(string id, CancellationToken ct = default)
     {
-        return await _context.Applications
+
+        ApplicationDto applicationDto   = await _context.Applications
             .AsNoTracking()
             .Where(a => (a.ApplicationNumber == id || a.Id == id) && a.IsDeleted != true && a.ApplicationApprovalStatusId == (int)ApplicationStatus.Pending)
             .Select(a => new ApplicationDto
@@ -201,6 +203,7 @@ public class ApplicationService : IApplicationService
                 ApplicationNumber = a.ApplicationNumber,
                 ApplicationTypeId = a.ApplicationTypeId,
                 CreatedDate = a.CreatedDate,
+                OwnerId = a.OwnerId,
 
                 // Application Approval Status (EN/AR/FR)
                 ApplicationApprovalStatus = a.ApplicationApprovalStatus == null ? null : new StatusDto
@@ -315,6 +318,22 @@ public class ApplicationService : IApplicationService
                     .ToList()
             })
             .FirstOrDefaultAsync(ct);
+
+        var dl = _context.DrivingLicenses
+           .Where(dl => dl.IsDeleted == false && dl.CitizenId == applicationDto.OwnerId)
+           .OrderByDescending(dl => dl.IssuanceDate) // get the most recent
+           .FirstOrDefault();
+        var drivingLicenseDto = new DrivingLicenseDTO();
+        if (dl != null)
+        {
+            drivingLicenseDto.DrivingLicenseNumber = dl.IsInternational == false ? dl.DrivingLicenseNumber : null;
+            drivingLicenseDto.DrivingLicenseInternationalNumber = dl.IsInternational == true ? dl.DrivingLicenseNumber : null;
+            drivingLicenseDto.IssuanceDate = dl.IssuanceDate;
+            drivingLicenseDto.ExpiryDate = dl.ExpiryDate;
+            drivingLicenseDto.DrivingLicenseStatusId = dl.DrivingLicenseStatusId;
+        }
+        applicationDto.DrivingLicense = drivingLicenseDto;
+        return applicationDto;
     }
 
 
@@ -508,7 +527,7 @@ public class ApplicationService : IApplicationService
                     // API call successful - approve the application
                     applicationToUpdate.ApplicationApprovalStatusId = (int)ApplicationStatus.Approved;
                     applicationToUpdate.ApplicationApprovalStatusDate = DateTime.UtcNow;
-                     await CreateReceiptAsync(applicationId, ct);
+                    await CreateReceiptAsync(applicationId, ct);
                     _logger.LogInformation(
                         "Application {ApplicationId} approved after successful external API call. Status: {Status}",
                         applicationId, apiResponse.StatusCode);
@@ -604,7 +623,7 @@ public class ApplicationService : IApplicationService
     {
         // 0) Normalize inputs (avoid ToLower in SQL — SQL Server is case-insensitive by default)
         keyword = keyword?.Trim();
-       
+
 
         // 1) Build FILTER-ONLY query (no big projections)
         var filterQuery = _context.Applications
@@ -667,7 +686,7 @@ public class ApplicationService : IApplicationService
             }
         }
 
-        
+
 
         // 2) Count on the skinny filter
         var cacheKey = $"apps:count:kw={keyword ?? ""}:st={status}";
@@ -897,6 +916,24 @@ public class ApplicationService : IApplicationService
         receiptWithDetailRequest.ReceiptDetails = receiptDetail;
 
         await _receiptService.CreateWithDetailsAsync(receiptWithDetailRequest);
+    }
+
+    /// <summary>
+    /// Retrieves all status records
+    /// </summary>
+    public async Task<IEnumerable<object>> GetStatusesAsync(CancellationToken ct = default)
+    {
+        var result = await _context.Statuses
+            .Select(s => new
+            {
+                s.ID,
+                s.StatusDesc,
+                s.StatusDescAr,
+                s.StatusDescFr
+            })
+            .ToListAsync(ct);
+
+        return result;
     }
 
 }

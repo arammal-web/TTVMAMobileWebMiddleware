@@ -11,9 +11,11 @@ namespace TTVMAMobileWebMiddleware.Domain.Views
         public string ApplicationNumber { get; set; } = null!;
         public string ApplicationTypeId { get; set; } = null!;
         public DateTime CreatedDate { get; set; }
+        public int OwnerId { get; set; }
 
         public StatusDto? ApplicationApprovalStatus { get; set; }
         public StatusDto? ApplicationStatus { get; set; }
+        public DrivingLicenseDTO DrivingLicense { get; set; }
 
         public List<ApplicationProcessDto> ApplicationProcesses { get; set; } = new();
     }

@@ -126,6 +126,9 @@ builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 builder.Services.AddScoped<IReceiptService, ReceiptService>();
 builder.Services.AddScoped<INotificationService,  NotificationService>();
 
+// Background worker services
+builder.Services.AddHostedService<TTVMAMobileWebMiddleware.Application.Workers.ReceiptSyncWorker>();
+
 // External API HTTP Client
 builder.Services.AddHttpClient<IExternalApiService, ExternalApiService>();
 // JWT auth

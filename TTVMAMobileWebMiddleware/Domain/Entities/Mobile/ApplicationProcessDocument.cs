@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 
@@ -21,6 +22,9 @@ public partial class ApplicationProcessDocument
     public int BPVarietyId { get; set; }
 
     public int DocumentId { get; set; }
+
+    [IgnoreDataMember]
+    public string? AuthenticityResults { get; set; } 
 
     [StringLength(250)]
     public string? DocFilePath { get; set; }

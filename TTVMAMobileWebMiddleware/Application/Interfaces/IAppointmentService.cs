@@ -78,5 +78,9 @@ public interface IAppointmentService
         string? reason,
         CancellationToken ct = default);
     Task<List<AppointmentResponse>?> GetAppointments(int? status = null, CancellationToken ct = default);
+    /// <summary>
+    /// Retrieves all agenda status records
+    /// </summary>
+    Task<IEnumerable<object>> GetAgendaStatusesAsync(CancellationToken ct = default);
 }
 

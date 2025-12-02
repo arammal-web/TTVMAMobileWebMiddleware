@@ -19,6 +19,7 @@ using TTVMAMobileWebMiddleware.Domain.Enums;
 using TTVMAMobileWebMiddleware.Domain.Helpers;
 using TTVMAMobileWebMiddleware.Domain.Requests;
 using TTVMAMobileWebMiddleware.Domain.Views;
+using CitizenStatus = TTVMAMobileWebMiddleware.Domain.Enums.CitizenStatus;
 
 namespace TTVMAMobileWebMiddleware.Application.Services;
 
@@ -889,6 +890,8 @@ public class CitizenService : ICitizenService
 
         // Project to DTO with status names using join
         var items = await query
+            .Include( x => x.CitizenIdentityDocuments)
+            .Include( x => x.CitizenFaceImages)
             .Join(_context.Statuses,
                 citizen => citizen.ApprovalStatusId,
                 status => status.ID,
@@ -918,14 +921,239 @@ public class CitizenService : ICitizenService
         return (items, metaData);
     }
 
-    public async Task<Citizen> GetOnlineCitizenById(int citizenId, CancellationToken ct = default)
+    public async Task<CitizenDetailDto?> GetOnlineCitizenById(int citizenId, CancellationToken ct = default)
     {
-        return await _context.Citizens
-            .Include(x => x.CitizenIdentityDocuments)
-            .ThenInclude(x => x.Document)
-            .Where(x => x.Id == citizenId && x.IsValid == false && x.ApprovalStatusId == (int)CitizenStatus.PendingValidation && (x.IsDeleted == false || x.IsDeleted == null))
-            .FirstOrDefaultAsync();
+        var citizen = await _context.Citizens  
+                .Include(c => c.CitizenAddresses)
+                    .ThenInclude(a => a.City)
+                .Include(c => c.CitizenAddresses)
+                    .ThenInclude(a => a.Country)
+                .Include(c => c.CitizenAddresses)
+                    .ThenInclude(a => a.Region)
+                .Include(c => c.CitizenAddresses)
+                    .ThenInclude(a => a.Prefecture)
+                .Include(c => c.CitizenAddresses)
+                    .ThenInclude(a => a.Village)
+                .Include(c => c.CitizenFaceImages) 
+                .Include(c => c.CitizenIdentityDocuments)
+                    .ThenInclude(d => d.Document)
+                .Where(x => x.Id == citizenId && x.IsValid == false && 
+                x.ApprovalStatusId == (int)CitizenStatus.PendingValidation &&
+                (x.IsDeleted == false || x.IsDeleted == null))
+                .FirstOrDefaultAsync(ct);
+        if (citizen == null)
+            return null;
 
+        return new CitizenDetailDto
+        {
+            Id = citizen.Id,
+            UserId = citizen.UserId,
+            FirstName = citizen.FirstName,
+            LastName = citizen.LastName,
+            MiddleName = citizen.MiddleName,
+            DateOfBirth = citizen.DateOfBirth,
+            BirthPlace = citizen.BirthPlace,
+            MaidenName = citizen.MaidenName,
+            FathersName = citizen.FathersName,
+            MothersName = citizen.MothersName,
+            MothersMaidenName = citizen.MothersMaidenName,
+            FirstNameSecondLang = citizen.FirstNameSecondLang,
+            LastNameSecondLang = citizen.LastNameSecondLang,
+            FathersNameSecondLang = citizen.FathersNameSecondLang,
+            MothersNameSecondLang = citizen.MothersNameSecondLang,
+            MaidenNameSecondLang = citizen.MaidenNameSecondLang,
+            MothersMaidenNameSecondLang = citizen.MothersMaidenNameSecondLang,
+            OtherNames = citizen.OtherNames,
+            NationalId = citizen.NationalId,
+            GenderId = citizen.GenderId,
+            Address = citizen.Address,
+            IsHandicap = citizen.IsHandicap,
+            HandicapCardNumber = citizen.HandicapCardNumber,
+            HandicapNotes = citizen.HandicapNotes,
+            IsVIP = citizen.IsVIP,
+            BioTemplate = citizen.BioTemplate,
+            IsValid = citizen.IsValid,
+            ValidationDate = citizen.ValidationDate,
+            ValidationUserId = citizen.ValidationUserId,
+            StructureId = citizen.StructureId,
+            SecondLangCulture = citizen.SecondLangCulture,
+            FirstLangCulture = citizen.FirstLangCulture,
+            Email = citizen.Email,
+            Phone = citizen.Phone,
+            NationalityId = citizen.NationalityId,
+            MaritalStatusId = citizen.MaritalStatusId,
+            ProfessionId = citizen.ProfessionId,
+            SpouseProfessionId = citizen.SpouseProfessionId,
+            SpouseFirstName = citizen.SpouseFirstName,
+            SpouseLastName = citizen.SpouseLastName,
+            SpouseFirstNameL = citizen.SpouseFirstNameL,
+            SpouseLastNameL = citizen.SpouseLastNameL,
+            SpouseBirthDate = citizen.SpouseBirthDate,
+            SpouseBirthPlace = citizen.SpouseBirthPlace,
+            SpouseNationalityId = citizen.SpouseNationalityId,
+            Phone2 = citizen.Phone2,
+            PlaceOfBirthL = citizen.PlaceOfBirthL,
+            BloodId = citizen.BloodId,
+            RegisterId = citizen.RegisterId,
+            Notes = citizen.Notes,
+            IsDeleted = citizen.IsDeleted,
+            DeletedDate = citizen.DeletedDate,
+            DeletedUserId = citizen.DeletedUserId,
+            ApprovalStatusId = citizen.ApprovalStatusId,
+            CreatedDate = citizen.CreatedDate,
+            CreatedUserId = citizen.CreatedUserId,
+            ModifiedDate = citizen.ModifiedDate,
+            ModifiedUserId = citizen.ModifiedUserId,
+            CitizenAddresses = citizen.CitizenAddresses
+                .Where(a => a != null && (a.IsDeleted == null || a.IsDeleted == false))
+                .Select(a => new CitizenAddressDto
+                {
+                    Id = a.Id,
+                    CitizenId = a.CitizenId,
+                    CityId = a.CityId,
+                    CountryId = a.CountryId,
+                    RegionId = a.RegionId,
+                    PrefectureId = a.PrefectureId,
+                    VillageId = a.VillageId,
+                    Address1 = a.Address1,
+                    Address2 = a.Address2,
+                    Notes = a.Notes,
+                    IsDeleted = a.IsDeleted,
+                    DeletedDate = a.DeletedDate,
+                    DeletedUserId = a.DeletedUserId,
+                    CreatedDate = a.CreatedDate,
+                    CreatedUserId = a.CreatedUserId,
+                    ModifiedDate = a.ModifiedDate,
+                    ModifiedUserId = a.ModifiedUserId,
+                    City = a.City != null ? new CityDto
+                    {
+                        Id = a.City.Id,
+                        CountryId = a.City.CountryId,
+                        PrefectureId = a.City.PrefectureId,
+                        RegionId = a.City.RegionId,
+                        NameEN = a.City.NameEN,
+                        NameAR = a.City.NameAR,
+                        NameFR = a.City.NameFR,
+                        IsActive = a.City.IsActive,
+                        CreatedDate = a.City.CreatedDate
+                    } : null,
+                    Country = a.Country != null ? new CountryDto
+                    {
+                        Id = a.Country.Id,
+                        CountryCode = a.Country.CountryCode,
+                        CountryNameEN = a.Country.CountryNameEN,
+                        CountryNameAR = a.Country.CountryNameAR,
+                        CountryNameFR = a.Country.CountryNameFR,
+                        IsActive = a.Country.IsActive,
+                        CreatedDate = a.Country.CreatedDate
+                    } : null,
+                    Region = a.Region != null ? new RegionDto
+                    {
+                        Id = a.Region.Id,
+                        CountryId = a.Region.CountryId,
+                        PrefectureId = a.Region.PrefectureId,
+                        NameEN = a.Region.NameEN,
+                        NameAR = a.Region.NameAR,
+                        NameFR = a.Region.NameFR,
+                        IsActive = a.Region.IsActive,
+                        CreatedDate = a.Region.CreatedDate
+                    } : null,
+                    Prefecture = a.Prefecture != null ? new PrefectureDto
+                    {
+                        Id = a.Prefecture.Id,
+                        CountryId = a.Prefecture.CountryId,
+                        NameEN = a.Prefecture.NameEN,
+                        NameAR = a.Prefecture.NameAR,
+                        NameFR = a.Prefecture.NameFR,
+                        IsActive = a.Prefecture.IsActive,
+                        CreatedDate = a.Prefecture.CreatedDate
+                    } : null,
+                    Village = a.Village != null ? new VillageDto
+                    {
+                        Id = a.Village.Id,
+                        CountryId = a.Village.CountryId,
+                        PrefectureId = a.Village.PrefectureId,
+                        RegionId = a.Village.RegionId,
+                        NameEN = a.Village.NameEN,
+                        NameAR = a.Village.NameAR,
+                        NameFR = a.Village.NameFR,
+                        IsCapital = a.Village.IsCapital,
+                        IsActive = a.Village.IsActive,
+                        CreatedDate = a.Village.CreatedDate
+                    } : null
+                })
+                .ToList(),
+            CitizenFaceImages = citizen.CitizenFaceImages
+                .Where(f => f != null && (f.IsDeleted == null || f.IsDeleted == false))
+                .Select(f => new CitizenFaceImageDto
+                {
+                    Id = f.Id,
+                    CitizenId = f.CitizenId,
+                    FaceImage = f.FaceImage,
+                    FaceTemplate = f.FaceTemplate,
+                    ImageFormat = f.ImageFormat,
+                    IsPrimaryPhoto = f.IsPrimaryPhoto,
+                    CaptureDevice = f.CaptureDevice,
+                    FaceEncodingVersion = f.FaceEncodingVersion,
+                    Description = f.Description,
+                    FaseImageScore = f.Score,
+                    StructureId = f.StructureId,
+                    Notes = f.Notes,
+                    IsDeleted = f.IsDeleted,
+                    DeletedDate = f.DeletedDate,
+                    DeletedUserId = f.DeletedUserId,
+                    CreatedDate = f.CreatedDate,
+                    CreatedUserId = f.CreatedUserId,
+                    ModifiedDate = f.ModifiedDate,
+                    ModifiedUserId = f.ModifiedUserId
+                })
+                .ToList(),
+            CitizenIdentityDocuments = citizen.CitizenIdentityDocuments
+                .Where(d => d != null && (d.IsDeleted == null || d.IsDeleted == false))
+                .Select(d => new CitizenIdentityDocumentDto
+                {
+                    Id = d.Id,
+                    CitizenId = d.CitizenId,
+                    DocumentId = d.DocumentId,
+                    ProcessId = d.ProcessId,
+                    IdentityDocument = d.IdentityDocument,
+                    IdentityDocumentHash = d.IdentityDocumentHash,
+                    IdentityDocumentData = d.IdentityDocumentData,
+                    Description = d.Description,
+                    StructureId = d.StructureId,
+                    Notes = d.Notes,
+                    AuthenticityResults = d.AuthenticityResults,
+                    IsDeleted = d.IsDeleted,
+                    DeletedDate = d.DeletedDate,
+                    DeletedUserId = d.DeletedUserId,
+                    CreatedDate = d.CreatedDate,
+                    CreatedUserId = d.CreatedUserId,
+                    ModifiedDate = d.ModifiedDate,
+                    ModifiedUserId = d.ModifiedUserId,
+                    DocFileExt = d.DocFileExt,
+                    Document = d.Document != null ? new DocumentDto
+                    {
+                        Id = d.Document.Id,
+                        DocumentNameEn = d.Document.DocumentNameEn,
+                        DocumentNameAr = d.Document.DocumentNameAr,
+                        DocumentCode = d.Document.DocumentCode,
+                        GroupId = d.Document.GroupId,
+                        Domain = d.Document.Domain,
+                        MigrationId = d.Document.MigrationId,
+                        IsDeleted = d.Document.IsDeleted,
+                        DeletedUserId = d.Document.DeletedUserId,
+                        DeletedDate = d.Document.DeletedDate,
+                        CreatedDate = d.Document.CreatedDate,
+                        CreatedUserId = d.Document.CreatedUserId,
+                        ModifiedDate = d.Document.ModifiedDate,
+                        ModifiedUserId = d.Document.ModifiedUserId,
+                        StatusId = d.Document.StatusId,
+                        DocumentNameFr = d.Document.DocumentNameFr,
+                        Icon = d.Document.Icon
+                    } : null
+                })
+                .ToList()
+        };
     }
 
 
@@ -1336,6 +1564,24 @@ public class CitizenService : ICitizenService
         // 11. Final save and commit transaction
         await _context.SaveChangesAsync(ct);
         return dlSnapshot;
+    }
+
+    /// <summary>
+    /// Retrieves all citizen status records
+    /// </summary>
+    public async Task<IEnumerable<object>> GetCitizenStatusesAsync(CancellationToken ct = default)
+    {
+        var result = await _context.CitizenStatuses
+            .Select(cs => new
+            {
+                cs.Id,
+                cs.NameEn,
+                cs.NameAr,
+                cs.NameFr
+            })
+            .ToListAsync(ct);
+
+        return result;
     }
 
 }

@@ -1,8 +1,9 @@
-﻿using System;
+﻿using Microsoft.EntityFrameworkCore;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
-using Microsoft.EntityFrameworkCore;
+using System.Runtime.Serialization;
 
 namespace TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
 
@@ -31,6 +32,9 @@ public partial class CitizenFaceImage
 
     [StringLength(200)]
     public string? Description { get; set; }
+    
+    [IgnoreDataMember]
+    public double? Score { get; set; }
 
     public int? StructureId { get; set; }
 

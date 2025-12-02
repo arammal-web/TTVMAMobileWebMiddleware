@@ -1114,5 +1114,24 @@ public class AppointmentService : IAppointmentService
         return description;
     }
 
+    /// <summary>
+    /// Retrieves all agenda status records
+    /// </summary>
+    public async Task<IEnumerable<object>> GetAgendaStatusesAsync(CancellationToken ct = default)
+    {
+        var result = await _context.AgendaStatuses
+            .Select(agendaStatus => new
+            {
+                agendaStatus.Id,
+                agendaStatus.DescriptionEN,
+                agendaStatus.DescriptionAR,
+                agendaStatus.DescriptionFR,
+                agendaStatus.DateCreated
+            })
+            .ToListAsync(ct);
+
+        return result;
+    }
+
     #endregion
 }

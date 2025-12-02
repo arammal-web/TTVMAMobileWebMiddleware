@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Runtime.Serialization;
 using Microsoft.EntityFrameworkCore;
 
 namespace TTVMAMobileWebMiddleware.Domain.Entities.Mobile;
@@ -32,6 +33,8 @@ public partial class CitizenIdentityDocument
 
     [StringLength(2000)]
     public string? Notes { get; set; }
+    [IgnoreDataMember]
+    public string? AuthenticityResults { get; set; }
 
     public bool? IsDeleted { get; set; }
 
